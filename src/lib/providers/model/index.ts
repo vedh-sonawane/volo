@@ -1,0 +1,35 @@
+// Model provider factory + resolver.
+//
+// Resolves the configured provider, but ALWAYS guarantees a working engine:
+// if the preferred provider is unavailable at runtime, resolveModel() returns
+// the rule-based provider so the app runs in honest degraded mode.
+
+import type { ModelProvider } from "./types";
+import { RuleModelProvider } from "./rule";
+import { OllamaModelProvider } from "./ollama";
+
+export type { ModelProvider, GenerateOptions } from "./types";
+
+const rule = new RuleModelProvider();
+
+function configured(): ModelProvider {
+  const choice = (process.env.MODEL_PROVIDER || "rule").toLowerCase();
+  switch (choice) {
+    case "ollama":
+      return new OllamaModelProvider();
+    case "rule":
+    default:
+      return rule;
+  }
+}
+
+/**
+ * Returns the provider that will actually run this request. Tries the configured
+ * provider; if it can't run, falls back to the deterministic rule provider.
+ */
+export async function resolveModel(): Promise<ModelProvider> {
+  const preferred = configured();
+  if (preferred.name === "rule") return rule;
+  const ok = await preferred.available();
+  return ok ? preferred : rule;
+}
