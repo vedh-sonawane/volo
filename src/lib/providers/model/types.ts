@@ -17,6 +17,8 @@ export interface GenerateOptions {
   json?: boolean;
   temperature?: number;
   maxTokens?: number;
+  /** Override the provider's default request timeout (ms) for this call. */
+  timeoutMs?: number;
 }
 
 export interface ModelProvider {

@@ -3,6 +3,7 @@
 // fallback built from real extracted data so the app works with zero AI.
 
 import type {
+  Combination,
   Comparison,
   FinalResult,
   ResultItem,
@@ -10,7 +11,7 @@ import type {
   TaskConstraints,
 } from "@/lib/types";
 import type { ModelProvider } from "@/lib/providers/model";
-import { schemaFor } from "./domains";
+import { pluralize } from "./classify";
 import { truncate } from "@/lib/util";
 
 export async function summarize(
@@ -20,17 +21,28 @@ export async function summarize(
   sources: Source[],
   model: ModelProvider,
   limitations: string[],
-  offeredActions: string[]
+  offeredActions: string[],
+  combination?: Combination
 ): Promise<FinalResult> {
+  // Multi-domain objectives are summarized from the combination/join result.
+  if (combination) {
+    return { ...combinationSummary(c, combination, sources, limitations, offeredActions), modelUsed: false };
+  }
+
   const deterministic = deterministicSummary(objective, c, comparison, sources, limitations, offeredActions);
 
-  // Optionally enrich the summary prose with a local model — never required,
-  // and we still return real takeaways/limitations regardless.
-  if (await model.available()) {
-    const top = comparison?.recommendedIds
-      .map((id) => comparison.items.find((i) => i.id === id))
-      .filter(Boolean) as ResultItem[] | undefined;
-    const prompt = buildPrompt(objective, c, top ?? [], sources);
+  const top = (comparison?.recommendedIds ?? [])
+    .map((id) => comparison!.items.find((i) => i.id === id))
+    .filter(Boolean) as ResultItem[];
+
+  // HONESTY GUARD: only let the model write prose when there is REAL evidence to
+  // summarize (actual pages read AND at least one extracted option). With no
+  // evidence, a model asked to "summarize" would fabricate — so we never call it
+  // and instead return the honest deterministic message. This also records
+  // whether the model actually contributed, so the UI can report it truthfully.
+  const hasEvidence = sources.length > 0 && top.length > 0;
+  if (hasEvidence && (await model.available())) {
+    const prompt = buildPrompt(objective, c, top, sources);
     const text = await model.generate(prompt, {
       system:
         "You are a careful research assistant. Only use the provided facts. " +
@@ -39,10 +51,10 @@ export async function summarize(
       temperature: 0.2,
     });
     if (text && text.length > 20) {
-      return { ...deterministic, summary: truncate(text.trim(), 900) };
+      return { ...deterministic, summary: truncate(text.trim(), 900), modelUsed: true };
     }
   }
-  return deterministic;
+  return { ...deterministic, modelUsed: false };
 }
 
 function buildPrompt(
@@ -78,10 +90,13 @@ function deterministicSummary(
   limitations: string[],
   offeredActions: string[]
 ): FinalResult {
-  const schema = schemaFor(c.domain);
+  const label = c.entityLabel || "option";
+  const plural = (n: number) => pluralize(label, n);
   const recommended = (comparison?.recommendedIds ?? [])
     .map((id) => comparison!.items.find((i) => i.id === id))
     .filter(Boolean) as ResultItem[];
+  const infoCount = comparison?.informationCount ?? 0;
+  const nSources = sources.length;
 
   const takeaways: string[] = [];
   recommended.forEach((r, i) => {
@@ -95,28 +110,105 @@ function deterministicSummary(
 
   let headline: string;
   let summary: string;
-  if (c.domain === "howto" && recommended.length > 0) {
+  const nextAction = nextActionFor(c, recommended.length, sources);
+
+  if (c.outcome === "procedure" && recommended.length > 0) {
     headline = `Here are the steps, in order`;
     summary =
-      `Volo read ${sources.length} source${sources.length === 1 ? "" : "s"} and extracted ${recommended.length} ` +
+      `Volo read ${nSources} source${nSources === 1 ? "" : "s"} and extracted ${recommended.length} ` +
       `step${recommended.length === 1 ? "" : "s"} to follow, shown in order below. ` +
       `Each step links to the page it came from — confirm details on the official site before acting.`;
-  } else if (recommended.length > 0) {
-    headline = `Found ${recommended.length} ${schema.noun}${recommended.length === 1 ? "" : "s"} for your objective`;
+  } else if (c.outcome === "candidates" && recommended.length > 0) {
+    headline = `Found ${recommended.length} ${plural(recommended.length)}`;
     summary =
-      `Based on ${sources.length} source${sources.length === 1 ? "" : "s"}, ` +
-      `the strongest option is ${recommended[0].name}. ` +
+      `From ${nSources} page${nSources === 1 ? "" : "s"} read, ${recommended.length} qualified as ` +
+      `real ${plural(recommended.length)} (a named provider with concrete details). ` +
+      `The strongest is ${recommended[0].name}. ` +
       (comparison?.rationale ?? "") +
-      ` Every value above is linked to the page it came from — verify before acting.`;
-  } else {
-    headline = `No verifiable ${schema.noun}s matched automatically`;
+      ` Every value links to the page it came from — verify before acting.`;
+  } else if (c.outcome === "candidates") {
+    // Honest zero-candidate case — the whole point of this fix.
+    headline = `No actual ${plural(2)} found — only information`;
     summary =
-      `Volo searched the web and read ${sources.length} page${sources.length === 1 ? "" : "s"}, ` +
-      `but couldn't extract enough structured, in-budget options to recommend confidently. ` +
-      `This is reported honestly rather than guessing. Try adding a specific location or loosening constraints.`;
+      `Volo read ${nSources} page${nSources === 1 ? "" : "s"}` +
+      (infoCount > 0
+        ? `, but ${infoCount === 1 ? "it was" : "they were"} guides, directories, or listings — not a real ${label} with a name and contact/price. `
+        : `, but none contained an actual ${label} with usable details. `) +
+      `Rather than pass those off as options, Volo is reporting honestly that no qualifying ${plural(2)} were found. ` +
+      `See the sources for what was read.`;
+  } else {
+    headline = `Information gathered`;
+    summary =
+      `Volo read ${nSources} page${nSources === 1 ? "" : "s"} relevant to your objective. ` +
+      `See the sources below; nothing was fabricated.`;
   }
 
-  return { headline, summary, takeaways, limitations, offeredActions };
+  return { headline, summary, takeaways, limitations, offeredActions, nextAction };
+}
+
+/** A concrete, generic next step to move the objective forward. */
+function nextActionFor(c: TaskConstraints, candidateCount: number, sources: Source[]): string {
+  const label = c.entityLabel || "option";
+  if (c.outcome === "procedure") {
+    return candidateCount > 0
+      ? "Follow the steps above on the official site; confirm any account-specific details."
+      : "No clear steps were extracted — open the official help/policy page directly.";
+  }
+  if (c.outcome === "candidates") {
+    if (candidateCount === 0) {
+      if (c.location === "near me" || !c.location) {
+        return `Tell Volo your city or area, so it can search local ${pluralize(label)} directly (public search couldn't geo-filter "near me").`;
+      }
+      return `Provide a specific ${label} directory or site to read, or loosen a constraint — the pages found were informational, not real ${pluralize(label)}.`;
+    }
+    return `Pick one of the ${candidateCount} ${pluralize(label, candidateCount)} above; Volo can then prepare an enquiry (with your approval) to confirm price and availability.`;
+  }
+  return "Review the sources below; refine the objective if you need a specific outcome.";
+}
+
+// Honest summary of a multi-domain combination/join (BL-2).
+function combinationSummary(
+  c: TaskConstraints,
+  combination: Combination,
+  sources: Source[],
+  limitations: string[],
+  offeredActions: string[]
+): FinalResult {
+  const recs = combination.recommendedIds
+    .map((rid) => combination.options.find((o) => o.id === rid))
+    .filter(Boolean) as Combination["options"];
+  const lims = [...limitations];
+  if (combination.missing.length) {
+    lims.push(`No options were found for: ${combination.missing.join(", ")}. Those categories couldn't be filled, so combinations involving them are incomplete.`);
+  }
+  if (recs.some((o) => !o.priceComplete)) {
+    lims.push("Some combinations have unknown prices for one or more parts — their totals are lower bounds, not confirmed against the budget.");
+  }
+
+  const takeaways = recs.map((o, i) => {
+    const parts = o.picks.map((p) => `${p.label}: ${p.name}${p.price != null ? ` ($${p.price})` : ""}`).join(" + ");
+    const total = o.totalPrice != null ? ` — total ~$${o.totalPrice}${o.priceComplete ? "" : " (partial)"}${c.maxPrice != null ? (o.withinBudget ? " ✓ within budget" : " ✗ over/unconfirmed") : ""}` : " — prices n/a";
+    return `#${i + 1} ${parts}${total}`;
+  });
+
+  let headline: string;
+  let summary: string;
+  if (recs.length > 0) {
+    headline = `Best cross-category combination${recs.length === 1 ? "" : "s"} found`;
+    summary = `Researched each category independently, then combined them. ${combination.rationale} Every option links to the page it came from — confirm prices/availability before booking.`;
+  } else {
+    headline = `Couldn't form a complete combination`;
+    summary = `Researched the categories, but couldn't assemble a full in-budget combination. ${combination.rationale} This is reported honestly rather than guessing.`;
+  }
+
+  const nextAction =
+    recs.length > 0
+      ? `Confirm the current price and availability of each part of the top combination, then approve booking/contacting each provider (Volo won't book without your go-ahead).`
+      : combination.missing.length
+        ? `Provide a specific site/directory for: ${combination.missing.join(", ")}, or loosen a constraint, then retry.`
+        : `Loosen the budget or constraints and retry.`;
+
+  return { headline, summary, takeaways, limitations: lims, offeredActions, nextAction };
 }
 
 function hostname(url?: string): string {

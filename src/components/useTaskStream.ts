@@ -14,12 +14,13 @@ interface State {
  * Task from incremental events. Authoritative snapshots ("task"/"done") replace
  * the whole object so client state can never drift from the server's truth.
  */
-export function useTaskStream(taskId: string) {
+export function useTaskStream(taskId: string, reloadToken = 0) {
   const [state, setState] = useState<State>({ task: null, connected: false, error: null });
   const esRef = useRef<EventSource | null>(null);
 
   useEffect(() => {
     let cancelled = false;
+    void reloadToken; // re-subscribe when the caller bumps this (after approve/reply)
 
     // 1) Load the current snapshot immediately (fast first paint).
     fetch(`/api/tasks/${taskId}`)
@@ -59,7 +60,7 @@ export function useTaskStream(taskId: string) {
       cancelled = true;
       es.close();
     };
-  }, [taskId]);
+  }, [taskId, reloadToken]);
 
   return state;
 }

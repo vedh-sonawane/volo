@@ -8,6 +8,7 @@
 import type { FetchedPage } from "@/lib/providers/research";
 import type { ResultItem, TaskConstraints } from "@/lib/types";
 import { schemaFor } from "./domains";
+import { isValidCandidate } from "./classify";
 import { clamp, hostOf, id, normalizeWs, truncate } from "@/lib/util";
 
 const RE = {
@@ -26,11 +27,21 @@ export function extractStructured(
   pages: FetchedPage[],
   c: TaskConstraints
 ): ResultItem[] {
-  const schema = schemaFor(c.domain);
+  const schema = schemaFor(c.domain, c.outcome);
+  const entityTerms = entityTermsFor(c);
   const rows: ResultItem[] = [];
 
-  for (const page of pages) {
-    if (!page.ok || page.words < 30) continue;
+  // A how-to should come from ONE authoritative guide, not a merge of unrelated
+  // pages. For a procedure objective, extract steps only from the single most
+  // relevant page (pages arrive in relevance-ranked order).
+  const workPages =
+    c.outcome === "procedure"
+      ? pickProcedurePage(pages, entityTerms)
+      : pages;
+
+  for (const page of workPages) {
+    // Skip only genuinely empty pages — a real provider page can be short.
+    if (!page.ok || page.words < 15) continue;
     const lines = page.text.split("\n");
 
     // 1) Mine listicle entities ("1. Joe's Driving School").
@@ -52,7 +63,48 @@ export function extractStructured(
     }
   }
 
-  return dedupeByName(rows);
+  // Tag each row as an actual candidate entity vs. mere information. For a
+  // "candidates" objective this is where government guides, FAQs, nav pages, and
+  // aggregator titles get demoted to information — the generic distinction that
+  // stops "Register as an ADI" from ever appearing as an option.
+  const tagged = dedupeByName(rows).map((r) => ({
+    ...r,
+    kind: rowKind(r, c, entityTerms),
+  }));
+  return tagged;
+}
+
+/** Choose the single most-relevant readable page for a how-to objective. */
+function pickProcedurePage(pages: FetchedPage[], entityTerms: string[]): FetchedPage[] {
+  const ok = pages.filter((p) => p.ok && p.words >= 15);
+  if (ok.length === 0) return [];
+  if (entityTerms.length === 0) return ok.slice(0, 1);
+  const relevant = ok.filter((p) => {
+    const hay = `${p.title} ${p.text}`.toLowerCase();
+    return entityTerms.some((t) => hay.includes(t));
+  });
+  return (relevant.length ? relevant : ok).slice(0, 1);
+}
+
+// Meaningful nouns from the objective that anchor "the right kind of entity",
+// excluding location and money/number noise (which match too broadly).
+const TERM_NOISE = new Set([
+  "dollars", "dollar", "usd", "cad", "eur", "gbp", "price", "prices", "cheap",
+  "cheapest", "budget", "hour", "hourly", "person", "night", "day", "week",
+  "weekend", "near", "nearby", "best", "top", "available", "list", "options",
+]);
+
+function entityTermsFor(c: TaskConstraints): string[] {
+  const locTokens = new Set(
+    (c.location && c.location !== "near me" ? c.location.toLowerCase().split(/\s+/) : [])
+  );
+  return c.keywords.filter((k) => k.length >= 3 && !TERM_NOISE.has(k) && !locTokens.has(k));
+}
+
+function rowKind(row: ResultItem, c: TaskConstraints, entityTerms: string[]): ResultItem["kind"] {
+  if (c.outcome === "procedure") return "candidate"; // steps are the deliverable
+  if (c.outcome === "answer") return "information";
+  return isValidCandidate(row, entityTerms) ? "candidate" : "information";
 }
 
 // Strong article-subheading signals — words that almost never appear in a real
@@ -183,6 +235,7 @@ function buildRow(
 
   return {
     id: id("r_"),
+    kind: "information", // provisional; set authoritatively in extractStructured
     name: truncate(name, 70),
     attributes: attrs,
     evidenceUrl: page.finalUrl,

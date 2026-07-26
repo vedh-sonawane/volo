@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createTask } from "@/lib/engine/create";
 import { listTasks, saveTask } from "@/lib/store";
+import type { ObjectiveSummary } from "@/lib/types";
+import { needsInput, nextActionFor, progressOf } from "@/lib/ui";
 
 export const runtime = "nodejs";
 
@@ -17,22 +19,28 @@ export async function POST(req: NextRequest) {
   if (objective.length < 4) {
     return NextResponse.json({ error: "Please describe what you want done (a few words at least)." }, { status: 400 });
   }
-  if (objective.length > 500) {
-    return NextResponse.json({ error: "Objective is too long (max 500 characters)." }, { status: 400 });
-  }
+  // No maximum length — objectives can be as detailed as the user needs.
   const task = createTask(objective);
   saveTask(task);
   return NextResponse.json({ task }, { status: 201 });
 }
 
-// GET /api/tasks — recent tasks (for history).
+// GET /api/tasks — all persisted objectives, summarized for the dashboard.
+// Everything here is derived from real stored state (the DB is the source of
+// truth); nothing is fabricated.
 export async function GET() {
-  const tasks = listTasks(30).map((t) => ({
+  const objectives: ObjectiveSummary[] = listTasks(100).map((t) => ({
     id: t.id,
+    title: t.title || t.objective,
     objective: t.objective,
     status: t.status,
     createdAt: t.createdAt,
     updatedAt: t.updatedAt,
+    progress: progressOf(t),
+    pendingApprovals: t.approvals.filter((a) => a.status === "pending").length,
+    needsInput: needsInput(t),
+    nextAction: nextActionFor(t),
+    lastActivity: t.timeline.length ? t.timeline[t.timeline.length - 1].message : undefined,
   }));
-  return NextResponse.json({ tasks });
+  return NextResponse.json({ objectives });
 }

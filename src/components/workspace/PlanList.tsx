@@ -4,14 +4,44 @@ import type { PlanStep, Task } from "@/lib/types";
 import { STEP_META } from "@/lib/ui";
 
 export function PlanList({ task }: { task: Task }) {
+  const planned = task.plan.length > 0;
   return (
     <section className="card p-5">
-      <Header title="Execution plan" hint={`${task.plan.filter((s) => s.status === "done").length}/${task.plan.length} done`} />
-      <ol className="mt-4 flex flex-col">
-        {task.plan.map((step, i) => (
-          <StepRow key={step.id} step={step} index={i + 1} last={i === task.plan.length - 1} />
-        ))}
-      </ol>
+      <Header
+        title="Execution plan"
+        hint={planned ? `${task.plan.filter((s) => s.status === "done").length}/${task.plan.length} done` : "designing…"}
+      />
+
+      {task.plannerUsed && (
+        <div className="mt-2 flex items-start gap-2">
+          <span
+            className="text-[10px] px-1.5 py-0.5 rounded-full font-[600] uppercase tracking-wider shrink-0 mt-0.5"
+            style={{
+              color: task.plannerUsed === "model" ? "var(--color-accent-ink)" : "var(--color-muted)",
+              background: task.plannerUsed === "model" ? "var(--color-accent-soft)" : "#f1eee7",
+            }}
+            title={task.plannerUsed === "model" ? "Plan authored by the local AI model" : "Deterministic plan"}
+          >
+            {task.plannerUsed === "model" ? "AI-planned" : "rule-planned"}
+          </span>
+          {task.planRationale && (
+            <p className="text-[12px] text-[var(--color-muted)] leading-snug italic">{task.planRationale}</p>
+          )}
+        </div>
+      )}
+
+      {planned ? (
+        <ol className="mt-4 flex flex-col">
+          {task.plan.map((step, i) => (
+            <StepRow key={step.id} step={step} index={i + 1} last={i === task.plan.length - 1} />
+          ))}
+        </ol>
+      ) : (
+        <div className="mt-4 flex items-center gap-2 text-[13px] text-[var(--color-faint)]">
+          <span className="spin" style={{ width: 13, height: 13, borderRadius: 999, border: "2px solid var(--color-line-strong)", borderTopColor: "var(--color-accent)" }} />
+          Designing a plan for this objective…
+        </div>
+      )}
     </section>
   );
 }

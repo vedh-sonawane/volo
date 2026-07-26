@@ -5,11 +5,28 @@ import type { ApprovalRequest, Task } from "@/lib/types";
 
 interface Outcome {
   performed: boolean;
+  status?: "succeeded" | "failed" | "unsupported" | "uncertain" | "requires_user" | "duplicate" | "rejected";
   message: string;
-  artifact?: { eml?: string; to?: string; subject?: string; steps?: string[]; target?: string };
+  confirmation?: string;
+  artifact?: {
+    eml?: string;
+    steps?: string[];
+    ics?: string;
+    filename?: string;
+  };
 }
 
-export function Approvals({ task }: { task: Task }) {
+const OUTCOME_COLOR: Record<string, string> = {
+  succeeded: "var(--color-ok)",
+  duplicate: "var(--color-ok)",
+  failed: "var(--color-err)",
+  uncertain: "var(--color-warn)",
+  requires_user: "var(--color-warn)",
+  unsupported: "var(--color-warn)",
+  rejected: "var(--color-muted)",
+};
+
+export function Approvals({ task, onDecided }: { task: Task; onDecided?: () => void }) {
   const pending = task.approvals.filter((a) => a.status === "pending");
   const decided = task.approvals.filter((a) => a.status !== "pending");
   if (task.approvals.length === 0) return null;
@@ -25,17 +42,17 @@ export function Approvals({ task }: { task: Task }) {
       </p>
       <div className="mt-4 flex flex-col gap-3">
         {pending.map((a) => (
-          <ApprovalCard key={a.id} approval={a} taskId={task.id} />
+          <ApprovalCard key={a.id} approval={a} taskId={task.id} onDecided={onDecided} />
         ))}
         {decided.map((a) => (
-          <ApprovalCard key={a.id} approval={a} taskId={task.id} />
+          <ApprovalCard key={a.id} approval={a} taskId={task.id} onDecided={onDecided} />
         ))}
       </div>
     </section>
   );
 }
 
-function ApprovalCard({ approval, taskId }: { approval: ApprovalRequest; taskId: string }) {
+function ApprovalCard({ approval, taskId, onDecided }: { approval: ApprovalRequest; taskId: string; onDecided?: () => void }) {
   const [status, setStatus] = useState(approval.status);
   const [busy, setBusy] = useState(false);
   const [outcome, setOutcome] = useState<Outcome | null>(null);
@@ -52,19 +69,21 @@ function ApprovalCard({ approval, taskId }: { approval: ApprovalRequest; taskId:
       if (res.ok) {
         setStatus(decision);
         setOutcome(data.outcome);
+        // Let the workspace re-sync — the objective may now be waiting for a
+        // reply (Phase 9) or completed.
+        setTimeout(() => onDecided?.(), 400);
       }
     } finally {
       setBusy(false);
     }
   }
 
-  function downloadEml() {
-    if (!outcome?.artifact?.eml) return;
-    const blob = new Blob([outcome.artifact.eml], { type: "message/rfc822" });
+  function download(content: string, filename: string, mime: string) {
+    const blob = new Blob([content], { type: mime });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
-    a.download = "volo-draft.eml";
+    a.download = filename;
     a.click();
     URL.revokeObjectURL(url);
   }
@@ -86,10 +105,24 @@ function ApprovalCard({ approval, taskId }: { approval: ApprovalRequest; taskId:
         {approval.commitment && <Field k="Commitment" v={approval.commitment} warn />}
       </dl>
 
+      {approval.financial && (
+        <div className="mt-3 border rounded-lg p-3" style={{ borderColor: "var(--color-err)", background: "color-mix(in srgb, var(--color-err) 5%, transparent)" }}>
+          <div className="eyebrow mb-1.5" style={{ color: "var(--color-err)" }}>Financial commitment — confirm the exact charge</div>
+          <div className="text-[15px] font-[700]">{approval.financial.currency} {approval.financial.total.toLocaleString()}</div>
+          <div className="text-[12px] text-[var(--color-muted)] mt-0.5">
+            {approval.financial.fees != null && <span>fees {approval.financial.currency} {approval.financial.fees} · </span>}
+            {approval.financial.taxes != null && <span>taxes {approval.financial.currency} {approval.financial.taxes} · </span>}
+            {approval.financial.account && <span>via {approval.financial.account} · </span>}
+            {approval.financial.refundPolicy || "refund policy not stated"}
+          </div>
+          <div className="text-[11px] text-[var(--color-faint)] mt-1.5">Approving confirms this specific charge. Volo never stores card details; any provider authentication happens in the provider&apos;s secure flow.</div>
+        </div>
+      )}
+
       {status === "pending" ? (
         <div className="mt-4 flex items-center gap-2">
           <button className="btn btn-accent text-[13px] !py-2" disabled={busy} onClick={() => decide("approved")}>
-            {busy ? "Working…" : "Approve"}
+            {busy ? "Working…" : approval.financial ? `Confirm & pay ${approval.financial.currency} ${approval.financial.total}` : "Approve"}
           </button>
           <button className="btn btn-ghost text-[13px] !py-2" disabled={busy} onClick={() => decide("rejected")}>
             Decline
@@ -99,12 +132,26 @@ function ApprovalCard({ approval, taskId }: { approval: ApprovalRequest; taskId:
 
       {outcome && (
         <div className="mt-3 border-t pt-3 fade-up">
-          <div className="text-[12.5px] leading-relaxed" style={{ color: outcome.performed ? "var(--color-ok)" : "var(--color-warn)" }}>
-            {outcome.message}
+          <div className="text-[12.5px] leading-relaxed flex items-start gap-1.5" style={{ color: OUTCOME_COLOR[outcome.status || (outcome.performed ? "succeeded" : "unsupported")] || "var(--color-warn)" }}>
+            <span>{outcome.performed ? "✓" : outcome.status === "failed" ? "✗" : "•"}</span>
+            <span>{outcome.message}</span>
           </div>
+          {outcome.confirmation && outcome.performed && (
+            <div className="mt-1 text-[11.5px] text-[var(--color-faint)] font-[var(--font-mono)]">confirmation: {outcome.confirmation}</div>
+          )}
+          {outcome.artifact?.ics && (
+            <div className="mt-2">
+              <button
+                className="btn btn-ghost text-[12.5px] !py-1.5"
+                onClick={() => download(outcome.artifact!.ics!, outcome.artifact!.filename || "volo-event.ics", "text/calendar")}
+              >
+                ↓ Download calendar file (.ics)
+              </button>
+            </div>
+          )}
           {outcome.artifact?.eml && (
             <div className="mt-2">
-              <button className="btn btn-ghost text-[12.5px] !py-1.5" onClick={downloadEml}>
+              <button className="btn btn-ghost text-[12.5px] !py-1.5" onClick={() => download(outcome.artifact!.eml!, "volo-draft.eml", "message/rfc822")}>
                 ↓ Download draft (.eml)
               </button>
               <pre className="mt-2 text-[11.5px] whitespace-pre-wrap font-[var(--font-mono)] text-[var(--color-muted)] bg-[var(--color-surface)] border rounded-lg p-3 max-h-48 overflow-auto">

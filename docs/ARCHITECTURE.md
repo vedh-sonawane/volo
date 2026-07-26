@@ -83,6 +83,131 @@ src/
       email-draft.ts             Local .eml draft (never sends)
 ```
 
+## Execution model: a tool-driven engine (not a research pipeline)
+
+Volo is an **objective-execution engine**. Web research is not the product — it
+is a handful of tools among many. The flow is:
+
+```
+Objective → Understand → Plan (select + sequence tools) → Execute (generic loop)
+          → Approve consequential actions → (wait) → Report
+```
+
+- **Tools** (`src/lib/tools/kit.ts`) — every capability implements one
+  `ExecutableTool` interface (`run`, `permission`, `requiresApproval`,
+  `implemented`, `onError`). Tools share a per-run **blackboard** so outputs flow
+  between them (search URLs → fetched pages → candidates → comparison → draft).
+  - Implemented, free, automatic: `reason`, `web_search`, `fetch_page`,
+    `read_document`, `extract_structured`, `compare`, `draft_email`.
+  - Declared but **not** implemented (honest, approval-gated): `send_email`,
+    `submit_form`, `book`, `monitor_inbox`, `calendar_event`.
+- **Planner** (`src/lib/engine/planner.ts`) — `createPlan` dynamically SELECTS
+  and SEQUENCES tools from the objective's outcome + detected **action intent**
+  (`detectActions` in `classify.ts`). Different objectives yield different plans:
+  - "find an instructor" → `reason → search → fetch → extract → compare`
+  - "…and get me booked" → adds `draft_email → book (approval) → monitor_inbox`
+  - "get me a refund" (procedure) → `… → draft_email → send_email (approval) → monitor_inbox`
+  - "cancel my subscription" → `… → draft_email → submit_form (approval) → monitor_inbox`
+  - an objective containing a URL → `read_document` instead of search.
+- **Engine** (`src/lib/engine/executor.ts`) — a GENERIC loop that walks the plan
+  and dispatches each step to its tool. It knows nothing about "research". When
+  it reaches a tool with `requiresApproval`, it stops, turns that step into an
+  `ApprovalRequest`, and the objective enters `awaiting_approval`. On approval,
+  a not-implemented action produces a safe artifact (draft `.eml` / exact steps)
+  — it is never faked.
+
+Adding a new capability = add one entry to `KIT` and let the planner select it.
+No `if (objectiveType === …)` anywhere.
+
+### General goal understanding + clarification (BL-2)
+
+Volo interprets messy, underspecified goals instead of requiring a fully-formed
+prompt. The pipeline is:
+
+```
+Goal → Understanding (goal model) → Missing-info gate → Plan → DAG execution
+     → Combine/join → Constraint eval → Ranking → Approval → Action → Verify
+```
+
+- **Goal model** (`src/lib/engine/goal.ts`, `GoalModel`): the model extracts a
+  plain-language summary, **hard constraints** (must hold → filter), **soft
+  preferences** (nice → rank, never filter), **assumptions**, and
+  **missing-information** items each classified `blocking` / `optional` /
+  `researchable`. Domain-agnostic — no `if (insurance) ask year`. With no model,
+  a deterministic goal model is derived from parsed constraints and **never
+  blocks** (zero-AI path unchanged).
+- **Minimum-clarification gate** (`executor.planPhase`): if there are `blocking`
+  gaps and the user hasn't answered yet, the objective pauses in
+  `awaiting_clarification` and asks **only those** questions (optional /
+  researchable gaps are handled automatically — Volo doesn't interrogate).
+  `POST /api/tasks/[id]/clarify` merges the answers into the effective objective,
+  resets to a runnable state, and the reopened stream **re-plans with the
+  answers** (reusing the same persist/resume machinery as Phase 9). It asks at
+  most once — after answers it proceeds even if still uncertain, noting
+  assumptions.
+- **Hard vs soft in ranking**: hard constraints filter (e.g. the budget in
+  `compare`/`combine`); soft preferences add a generic keyword-match bonus to a
+  candidate's score (`compare.softPrefMatches`), which the combine stage inherits
+  via per-pick scores. Transparent in the UI ("Understanding" panel: must / prefer
+  / assuming).
+- **Multi-domain decomposition + join** (already in place): the model splits a
+  combinatorial goal into category sub-plans; `combine_domains` evaluates
+  cross-category combinations under the shared budget and ranks with trade-offs.
+- **Parallel DAG execution** (`executor.executeMultiDomain`): independent category
+  sub-plans run **concurrently** (each in its own pinned scope via `scopedCtx`),
+  then the combine + action steps run sequentially (so approval/wait checkpoints
+  still work). Single-domain objectives use the unchanged sequential loop.
+
+Everything feeds the existing approval, action (Phase 10), persistence, and
+outcome layers — this is an extension of the planner/executor, not a parallel
+system.
+
+### Real actions, safety & idempotency (Phase 10 hardening)
+
+Every consequential side effect goes through one capability contract
+(`src/lib/actions/`): `ActionProvider { available, validate, execute }` with a
+structured `ActionResult { status, message, confirmation, artifact }`. Status is
+honest and rich — `succeeded` (with a provider confirmation), `failed`,
+`uncertain` (timeout — may have happened; never auto-retried), `requires_user`
+(auth/3DS/OTP → handed to the user's secure flow), `unsupported` (no integration
+→ safe fallback steps), `duplicate` (idempotency hit).
+
+- **Providers share the contract**: real (`SmtpEmailAction`, `IcsCalendarAction`),
+  an honest `LocalDraftEmailAction`/`UnsupportedAction` fallback, and a
+  deterministic `SandboxAction` for testing. `ACTION_MODE=sandbox` swaps in the
+  sandbox for booking/form/payment — **only the external side effect changes**,
+  the approval → validate → execute → verify → record pipeline is identical.
+- **`executeAction`** (`src/lib/actions/index.ts`) enforces **idempotency** via a
+  per-task ledger keyed by `${taskId}:${approvalId}`: a `succeeded`/`uncertain`
+  action is never re-executed (no duplicate charge/booking); `failed` stays
+  retryable; `unsupported`/`requires_user` don't lock the key.
+- **Financial safety**: booking approvals carry a `FinancialQuote` (total,
+  currency, fees, refund policy) shown for explicit confirmation of the *specific*
+  charge. Volo stores **no** card numbers/CVVs/OTPs anywhere; auth happens in the
+  provider's secure flow. A financial action without a quote is refused.
+- **Target validation**: placeholder/malformed targets (e.g. `[add the …]`) are
+  refused before execution. The approve route (`/api/tasks/[id]/approve`) drives
+  this pipeline and reports the true outcome; nothing is ever reported as
+  "succeeded" because the model wrote text saying so.
+- **Tested** (`npm test`): success, failure, timeout→uncertain, auth-required,
+  duplicate, placeholder-blocked, financial-required, and unsupported — plus a
+  live sandbox booking through the real HTTP endpoint (confirmation + idempotency).
+
+### Persistence & resume (Phase 9)
+
+Objectives genuinely pause and resume, surviving restarts (state lives in SQLite):
+- The engine stops at two persistent checkpoints — a tool that needs approval
+  (`awaiting_approval`) or a `monitor_inbox` wait with no reply yet
+  (`waiting_response`). Both fully persist `Task.plan` step statuses + `Task.waiting`.
+- `runTask` plans+executes from the start; **`resumeTask`** continues from the
+  first unfinished step with **no re-planning**. Approving an action
+  (`POST …/approve`) marks the step done and calls `resumeTask`, which advances
+  to the wait. Relaying a reply (`POST …/reply`) records an `externalEvent`,
+  clears `Task.waiting`, and `resumeTask` consumes it to finish.
+- Honesty: Volo can't watch a real inbox for free, so `monitor_inbox` waits for
+  the **user to relay** the reply rather than faking inbox monitoring. Nothing is
+  ever marked done that didn't happen.
+
 ## Key abstractions
 
 ### ResearchProvider (`lib/providers/research`)

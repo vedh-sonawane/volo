@@ -4,22 +4,12 @@
 import type { ResearchProvider } from "./types";
 import { DuckDuckGoProvider } from "./duckduckgo";
 import { MockResearchProvider } from "./mock";
+import { cfg } from "@/lib/config";
 
 export type { ResearchProvider, SearchResult, FetchedPage } from "./types";
 
-let cached: ResearchProvider | null = null;
-
+// Resolved per call (cheap) so a settings change takes effect without a restart.
 export function getResearchProvider(): ResearchProvider {
-  if (cached) return cached;
-  const choice = (process.env.RESEARCH_PROVIDER || "duckduckgo").toLowerCase();
-  switch (choice) {
-    case "mock":
-      cached = new MockResearchProvider();
-      break;
-    case "duckduckgo":
-    default:
-      cached = new DuckDuckGoProvider();
-      break;
-  }
-  return cached;
+  const choice = cfg("RESEARCH_PROVIDER", "duckduckgo").toLowerCase();
+  return choice === "mock" ? new MockResearchProvider() : new DuckDuckGoProvider();
 }

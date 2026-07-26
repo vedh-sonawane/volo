@@ -126,6 +126,133 @@ const FIXTURES: Fixture[] = [
       <p>About $129. Mixed airlines. Book via aggregator. Flexible dates recommended.</p>
     </article></body></html>`,
   },
+
+  // ── Informational / reference pages (MUST be classified as information, not
+  //    candidates). These reproduce the reported failure: a government guide and
+  //    an aggregator listing that must never appear as "options". ──────────────
+  {
+    url: "https://www.gov.uk/become-driving-instructor",
+    title: "Become an approved driving instructor (ADI) — guide",
+    snippet: "How to register as an approved driving instructor (ADI).",
+    keywords: ["driving", "instructor", "instructors", "adi", "register", "become", "lessons"],
+    html: `<html><head><title>Become an approved driving instructor (ADI) — guide</title></head><body><article>
+      <h1>Become an approved driving instructor</h1>
+      <p>This guide explains how to qualify and register as an approved driving instructor (ADI).</p>
+      <h2>1. Register as an ADI</h2><p>To register you must pass three qualifying tests and a background check.</p>
+      <h2>2. When you're an ADI</h2><p>Once registered you must display your certificate in the car.</p>
+      <h2>3. Renew your ADI registration</h2><p>Registration lasts four years and must be renewed.</p>
+      <h2>4. Fees and costs</h2><p>The registration fee is set by the DVSA each year.</p>
+      <h2>5. More information</h2><p>Read the full guidance for approved driving instructors.</p>
+    </article></body></html>`,
+  },
+
+  // ── Bicycle repair: one real shop (candidate) + one how-to page (info). ─────
+  {
+    url: "https://spokes-repair.test/",
+    title: "Spokes Bike Repair — Toronto Bicycle Repair Shop",
+    snippet: "Bicycle repair and tune-ups in Toronto.",
+    keywords: ["bicycle", "bike", "repair", "shop", "toronto", "mechanic", "place", "tune"],
+    html: `<html><head><title>Spokes Bike Repair — Toronto Bicycle Repair Shop</title></head><body><main>
+      <h1>Spokes Bike Repair</h1>
+      <p>Full-service bicycle repair in Toronto, ON. Basic tune-up from $45, flat-tyre fix $20 — most repairs under $100.
+      Open Mon-Sat 9am-6pm. Rated 4.7/5 by local riders. Call (416) 555-0133 or book online.</p>
+    </main></body></html>`,
+  },
+  {
+    url: "https://bike-blog.test/how-to-fix-a-flat",
+    title: "How to Fix a Flat Bike Tire — Step by Step",
+    snippet: "A guide to repairing a flat bicycle tyre yourself.",
+    keywords: ["bicycle", "bike", "repair", "fix", "flat", "how", "tyre", "tire"],
+    html: `<html><head><title>How to Fix a Flat Bike Tire — Step by Step</title></head><body><article>
+      <h1>How to Fix a Flat Bike Tire</h1>
+      <h2>1. Remove the wheel</h2><p>Open the brake and undo the quick release.</p>
+      <h2>2. Take off the tyre</h2><p>Use tyre levers to pry one side off the rim.</p>
+      <h2>3. Replace the tube</h2><p>Insert a new inner tube and seat the tyre.</p>
+    </article></body></html>`,
+  },
+
+  // ── Campsite: one real campground (candidate) + one encyclopedia page (info).
+  {
+    url: "https://pinegrove-campground.test/",
+    title: "Pine Grove Campground — Camping near Toronto",
+    snippet: "Family campground with electric hookups near Toronto.",
+    keywords: ["campsite", "campground", "camping", "toronto", "electricity", "electric", "tent", "weekend"],
+    html: `<html><head><title>Pine Grove Campground — Camping near Toronto</title></head><body><main>
+      <h1>Pine Grove Campground</h1>
+      <p>A family campground in Barrie, ON, about an hour from Toronto. Sites from $38/night with electricity hookups.
+      Open May to October. Rated 4.6/5. Reserve online or call (705) 555-0180.</p>
+    </main></body></html>`,
+  },
+  {
+    url: "https://encyclo.test/wiki/Camping",
+    title: "Camping - Encyclopedia",
+    snippet: "Camping is an outdoor activity involving overnight stays.",
+    keywords: ["camping", "campsite", "outdoor", "tent", "history"],
+    html: `<html><head><title>Camping - Encyclopedia</title></head><body><article>
+      <h1>Camping</h1>
+      <p>Camping is an outdoor activity involving overnight stays away from home in a shelter such as a tent.</p>
+      <h2>History</h2><p>Recreational camping became popular in the early 20th century.</p>
+      <h2>Equipment</h2><p>Common equipment includes tents, sleeping bags, and stoves.</p>
+    </article></body></html>`,
+  },
+
+  // ── Universities: two real universities (candidates) + a rankings list (info).
+  {
+    url: "https://tech-university.test/tuition",
+    title: "Tech University — Tuition & Computer Science Program",
+    snippet: "Tuition and CS program details for Tech University.",
+    keywords: ["university", "universities", "tuition", "computer", "science", "compare", "college", "programs"],
+    html: `<html><head><title>Tech University — Tuition & Computer Science Program</title></head><body><main>
+      <h1>Tech University</h1>
+      <p>Tech University is a private research university located in Boston, MA. Annual undergraduate tuition is
+      $42,000 for the current academic year, excluding housing and fees. Our Computer Science program is rated
+      4.6/5 by students and offers specialisations in artificial intelligence, systems, and human-computer
+      interaction. Class sizes are small and most courses include a lab component. Students can apply online through
+      the admissions portal; the application deadline for the autumn intake is in January.</p>
+    </main></body></html>`,
+  },
+  {
+    url: "https://state-college.test/cs",
+    title: "State College — Affordable Computer Science Degree",
+    snippet: "Affordable CS degree at State College.",
+    keywords: ["university", "universities", "tuition", "computer", "science", "compare", "college", "programs"],
+    html: `<html><head><title>State College — Affordable Computer Science Degree</title></head><body><main>
+      <h1>State College</h1>
+      <p>State College is a public university located in Columbus, OH. Annual in-state tuition is $18,500 per year,
+      making it one of the more affordable options for a computer science degree. The BSc in Computer Science
+      includes a data-science track and an optional co-op placement year with local employers. The program is
+      rated 4.2/5 by current students. Financial aid and scholarships are available, and admissions are handled
+      through the state application system.</p>
+    </main></body></html>`,
+  },
+  {
+    url: "https://rankings.test/best-cs-schools",
+    title: "The 20 Best Computer Science Schools (2026 Rankings)",
+    snippet: "A ranking of top computer science schools.",
+    keywords: ["university", "universities", "computer", "science", "best", "rankings", "compare", "college"],
+    html: `<html><head><title>The 20 Best Computer Science Schools (2026 Rankings)</title></head><body><article>
+      <h1>The 20 Best Computer Science Schools</h1>
+      <p>Our editors ranked computer science programs by reputation.</p>
+      <h2>Methodology</h2><p>We weighted faculty, research output, and outcomes.</p>
+      <h2>More information</h2><p>See the full methodology and sources.</p>
+    </article></body></html>`,
+  },
+
+  // ── Subscription cancellation: a how-to guide (procedure → ordered steps). ──
+  {
+    url: "https://help-center.test/cancel-gym-membership",
+    title: "How to Cancel Your Gym Membership",
+    snippet: "Step-by-step guide to cancelling a gym subscription.",
+    keywords: ["cancel", "subscription", "gym", "membership", "how", "unsubscribe", "understand"],
+    html: `<html><head><title>How to Cancel Your Gym Membership</title></head><body><article>
+      <h1>How to Cancel Your Gym Membership</h1>
+      <h2>1. Log in to your account</h2><p>Sign in on the gym's website or app.</p>
+      <h2>2. Open Membership settings</h2><p>Go to Account, then Membership.</p>
+      <h2>3. Select Cancel Membership</h2><p>Choose a cancellation reason if prompted.</p>
+      <h2>4. Confirm the cancellation</h2><p>Review any notice period or final charge.</p>
+      <h2>5. Save the confirmation</h2><p>Keep the confirmation email as proof.</p>
+    </article></body></html>`,
+  },
 ];
 
 export class MockResearchProvider implements ResearchProvider {

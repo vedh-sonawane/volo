@@ -7,9 +7,17 @@ import { runTask } from "./executor";
 
 const running = new Set<string>();
 
-/** Terminal states — a task in one of these will not be re-run. */
+/** States that will NOT trigger a fresh run when the stream is (re)opened. */
 function isTerminal(t: Task): boolean {
-  return t.status === "completed" || t.status === "failed" || t.status === "awaiting_approval";
+  return (
+    t.status === "completed" ||
+    t.status === "failed" ||
+    t.status === "awaiting_approval" ||
+    t.status === "awaiting_clarification" ||
+    t.status === "waiting_response" ||
+    t.status === "paused" ||
+    t.status === "partially_completed"
+  );
 }
 
 /**

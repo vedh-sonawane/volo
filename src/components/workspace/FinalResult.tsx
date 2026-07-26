@@ -22,6 +22,13 @@ export function FinalResult({ task }: { task: Task }) {
         </ul>
       )}
 
+      {f.nextAction && (
+        <div className="mt-5 border rounded-lg p-4" style={{ borderColor: "var(--color-accent)", background: "var(--color-accent-soft)" }}>
+          <div className="eyebrow mb-1" style={{ color: "var(--color-accent-ink)" }}>Next action</div>
+          <p className="text-[13.5px] leading-relaxed" style={{ color: "var(--color-accent-ink)" }}>{f.nextAction}</p>
+        </div>
+      )}
+
       {f.limitations.length > 0 && (
         <div className="mt-5 border-t pt-4">
           <div className="eyebrow mb-2" style={{ color: "var(--color-warn)" }}>

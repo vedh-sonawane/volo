@@ -5,6 +5,7 @@
 
 import type { TaskConstraints } from "@/lib/types";
 import { normalizeWs, uniq } from "@/lib/util";
+import { classifyObjective } from "./classify";
 
 const WORD_NUMBERS: Record<string, number> = {
   a: 1, one: 1, two: 2, three: 3, four: 4, five: 5, six: 6, seven: 7,
@@ -34,7 +35,7 @@ export function understand(objective: string): TaskConstraints {
   const raw = objective.trim();
   const lower = raw.toLowerCase();
 
-  const domain = detectDomain(lower);
+  let domain = detectDomain(lower);
   const { maxPrice, priceUnit } = detectPrice(lower);
   const partySize = detectPartySize(lower);
   const count = detectCount(lower, domain, partySize);
@@ -42,8 +43,40 @@ export function understand(objective: string): TaskConstraints {
   const timeframe = detectTimeframe(lower);
   const keywords = detectKeywords(lower);
   const requirements = detectRequirements(raw);
+  const quantities = detectQuantities(lower, partySize);
 
-  return { domain, maxPrice, priceUnit, count, partySize, location, timeframe, keywords, requirements };
+  // Determine the OUTCOME the objective wants (candidates / procedure / answer).
+  // This is intent-level and overrides a shallow keyword domain guess: e.g.
+  // "find me an instructor … how to get this done" is a candidates objective,
+  // not a how-to, even though it contains "how to".
+  const base: TaskConstraints = {
+    outcome: "answer",
+    entityLabel: "option",
+    domain,
+    maxPrice,
+    priceUnit,
+    count,
+    partySize,
+    location,
+    timeframe,
+    keywords,
+    requirements,
+    quantities,
+  };
+  const intent = classifyObjective(raw, base);
+
+  // Reconcile domain with the outcome so the extraction schema matches:
+  //  - a candidates objective must never use the how-to (step) schema
+  //  - a procedure objective always uses the how-to (step) schema
+  if (intent.outcome === "candidates" && domain === "howto") domain = "general";
+  if (intent.outcome === "procedure") domain = "howto";
+
+  return {
+    ...base,
+    domain,
+    outcome: intent.outcome,
+    entityLabel: intent.entityLabel,
+  };
 }
 
 function detectDomain(lower: string): TaskConstraints["domain"] {
@@ -93,6 +126,30 @@ function detectPartySize(lower: string): number | undefined {
   return undefined;
 }
 
+// Generic quantity extraction — "5 nights", "3 units", "2 hours", "10 seats".
+// Maps each plural noun to a normalization basis. Domain-agnostic.
+const QTY_NOUNS: { re: RegExp; key: "night" | "unit" | "item" | "use" | "hour" | "month" }[] = [
+  { re: /\b(\d{1,3})\s+nights?\b/, key: "night" },
+  { re: /\b(\d{1,3})\s+hours?\b/, key: "hour" },
+  { re: /\b(\d{1,3})\s+months?\b/, key: "month" },
+  { re: /\b(\d{1,3})\s+(?:units?|seats?|tickets?|licen[sc]es?|rooms?|copies|copy)\b/, key: "unit" },
+  { re: /\b(\d{1,3})\s+items?\b/, key: "item" },
+  { re: /\b(\d{1,3})\s+(?:uses?|rides?|trips?|visits?|sessions?)\b/, key: "use" },
+];
+
+function detectQuantities(lower: string, partySize?: number): TaskConstraints["quantities"] {
+  const q: NonNullable<TaskConstraints["quantities"]> = {};
+  if (partySize) q.person = partySize;
+  for (const { re, key } of QTY_NOUNS) {
+    const m = lower.match(re);
+    if (m) {
+      const n = Number(m[1]);
+      if (n >= 1 && n <= 999) q[key] = n;
+    }
+  }
+  return Object.keys(q).length ? q : undefined;
+}
+
 // The domain noun(s) a "count" number would modify (e.g. "three restaurants").
 const DOMAIN_NOUNS: Record<TaskConstraints["domain"], string[]> = {
   instructors: ["instructor", "instructors", "tutor", "tutors", "teacher", "teachers", "option", "options"],
@@ -131,12 +188,25 @@ function detectCount(
   return undefined;
 }
 
+// Words that look like a place after "in/near…" but aren't (months, days).
+const NON_PLACE = new Set([
+  "january", "february", "march", "april", "may", "june", "july", "august",
+  "september", "october", "november", "december", "monday", "tuesday",
+  "wednesday", "thursday", "friday", "saturday", "sunday",
+]);
+
 function detectLocation(raw: string): string | undefined {
   const lower = raw.toLowerCase();
   if (/\bnear me\b|\baround me\b|\bin my area\b|\bnearby\b/.test(lower)) return "near me";
-  // "in San Francisco", "near Boston", "around Austin TX"
-  const m = raw.match(/\b(?:in|near|around|at)\s+([A-Z][A-Za-z.\-]+(?:\s+[A-Z][A-Za-z.\-]+){0,3})/);
-  if (m) return normalizeWs(m[1]);
+  // Prefer "<Place> area" (handles "in the Toronto area").
+  const area = raw.match(/\b([A-Z][a-z]+(?:\s+[A-Z][a-z]+)?)\s+area\b/);
+  if (area && !NON_PLACE.has(area[1].split(/\s+/)[0].toLowerCase())) return normalizeWs(area[1]);
+  // "in San Francisco", "near Boston", "around Austin TX" — but not "in September".
+  const m = raw.match(/\b(?:in|near|around|at)\s+(?:the\s+)?([A-Z][A-Za-z.\-]+(?:\s+[A-Z][A-Za-z.\-]+){0,3})/);
+  if (m) {
+    const first = m[1].split(/\s+/)[0].toLowerCase();
+    if (!NON_PLACE.has(first)) return normalizeWs(m[1]);
+  }
   return undefined;
 }
 

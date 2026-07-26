@@ -3,8 +3,17 @@
 import type { Task } from "@/lib/types";
 import { LIFECYCLE, STATUS_META } from "@/lib/ui";
 
+const POST_ACTIVE: Task["status"][] = [
+  "completed",
+  "failed",
+  "awaiting_approval",
+  "waiting_response",
+  "paused",
+  "partially_completed",
+];
+
 export function Stepper({ task }: { task: Task }) {
-  const terminal = task.status === "completed" || task.status === "failed" || task.status === "awaiting_approval";
+  const terminal = POST_ACTIVE.includes(task.status);
   const currentIdx = LIFECYCLE.indexOf(task.status);
 
   function stateOf(i: number): "done" | "active" | "todo" {

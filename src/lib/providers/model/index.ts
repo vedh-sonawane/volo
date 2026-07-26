@@ -7,13 +7,14 @@
 import type { ModelProvider } from "./types";
 import { RuleModelProvider } from "./rule";
 import { OllamaModelProvider } from "./ollama";
+import { cfg } from "@/lib/config";
 
 export type { ModelProvider, GenerateOptions } from "./types";
 
 const rule = new RuleModelProvider();
 
 function configured(): ModelProvider {
-  const choice = (process.env.MODEL_PROVIDER || "rule").toLowerCase();
+  const choice = cfg("MODEL_PROVIDER", "rule").toLowerCase();
   switch (choice) {
     case "ollama":
       return new OllamaModelProvider();

@@ -42,15 +42,24 @@ export function ComparisonPanel({ task }: { task: Task }) {
     .map((id) => cmp.items.find((i) => i.id === id))
     .filter(Boolean) as ResultItem[];
   const others = cmp.items.filter((i) => !cmp.recommendedIds.includes(i.id));
+  const entity = cmp.entityLabel || "option";
+  const n = cmp.items.length;
 
   return (
     <section className="card p-5">
-      <Header title="Comparison" hint={`${cmp.items.length} option${cmp.items.length === 1 ? "" : "s"} evaluated`} />
+      <Header
+        title="Candidates"
+        hint={
+          `${n} actual ${n === 1 ? entity : entity + "s"}` +
+          (cmp.informationCount > 0 ? ` · ${cmp.informationCount} info page${cmp.informationCount === 1 ? "" : "s"} set aside` : "")
+        }
+      />
       <p className="mt-2 text-[13px] text-[var(--color-muted)] leading-relaxed">{cmp.rationale}</p>
 
       {recommended.length === 0 ? (
         <div className="mt-4 text-[13px] text-[var(--color-muted)] border rounded-lg p-4 bg-[var(--color-paper)]">
-          No option met the constraints with enough verifiable detail to recommend. See the timeline for what was tried.
+          No actual {entity}s were found — only informational pages (see Sources). Volo won&apos;t present a guide or
+          directory as if it were a real {entity}.
         </div>
       ) : (
         <div className="mt-4 overflow-x-auto">

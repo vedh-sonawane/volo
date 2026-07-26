@@ -99,6 +99,21 @@ still come from real fetched pages — the model is told to use only provided
 evidence and never invent prices, names, or availability. If Ollama isn't
 running, Volo transparently falls back to the deterministic engine.
 
+**Two gotchas that make it silently fall back (both handled honestly):**
+
+1. **`OLLAMA_MODEL` must be a model you've actually pulled.** Check `ollama list`.
+   If it isn't installed, Volo detects that (it verifies the model exists, not
+   just that the server is up) and uses the deterministic engine — it will *not*
+   claim the model ran. The dev console prints exactly which models are available.
+2. **Slow CPUs may exceed the response timeout.** A large model (e.g. 8B) on CPU
+   can generate at ~1 token/sec, so a summary can take minutes. The default
+   ceiling is `OLLAMA_TIMEOUT_MS=90000` (90s); on timeout Volo shows the honest
+   deterministic summary. Use a small model (e.g. `llama3.2`, 3B) or a GPU for
+   fast enrichment, or raise `OLLAMA_TIMEOUT_MS` if you don't mind waiting.
+
+The task workspace "Provider" note always reports the truth: whether the model
+actually wrote the summary, or the deterministic engine did.
+
 ---
 
 ## How it works
@@ -121,6 +136,34 @@ Objective ─▶ Understand ─▶ Plan ─▶ Research ─▶ Extract ─▶ Co
    that need your approval.
 
 You watch all of this happen live via a streamed execution timeline.
+
+### Capabilities (tools)
+
+Volo is a tool-driven execution engine — web research is just part of it. The
+planner dynamically picks and sequences tools per objective:
+
+| Tool | What it does | Free & automatic? |
+| --- | --- | --- |
+| `reason` | Interpret the objective into constraints + outcome | ✅ |
+| `web_search` | Free web search (DuckDuckGo, no key) | ✅ |
+| `fetch_page` | Read the most relevant public pages | ✅ |
+| `read_document` | Read a specific URL you provide | ✅ |
+| `extract_structured` | Turn pages into candidates or ordered steps | ✅ |
+| `compare` | Validate + rank candidates against constraints | ✅ |
+| `draft_email` | Prepare (never send) an enquiry/request as `.eml` | ✅ |
+| `send_email` | **Really sends** via *your own* free SMTP (opt-in); else honest draft | ✅ approval-gated |
+| `calendar_event` | **Really generates** a downloadable `.ics` (local, no account) | ✅ approval-gated |
+| `submit_form` · `book` · `monitor_inbox` | Consequential actions with no free/safe path | ⚠️ **declared; prepares steps, not performed** |
+
+So "find an instructor" runs research only, while "find an instructor **and get
+me booked**" additionally prepares a draft and a booking step that **waits for
+your approval**. On approval, Volo performs the action *only where a genuinely
+free path exists*: it sends the email through **your own** configured SMTP
+(`SMTP_*` in `.env`), or writes a real `.ics` — otherwise it hands you a
+ready-to-use draft/steps and clearly says nothing was sent. It never uses a paid
+service, never sends silently, and refuses to send to a placeholder recipient.
+New free information sources (more search providers, site-specific readers) drop
+in behind the same tool interface.
 
 See [`docs/ARCHITECTURE.md`](./docs/ARCHITECTURE.md) for the full design,
 provider abstractions, and the tool/approval model.

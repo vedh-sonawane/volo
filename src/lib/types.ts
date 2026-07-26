@@ -14,8 +14,12 @@ export type TaskStatus =
   | "researching" // Researching
   | "extracting" // Extracting information
   | "comparing" // Comparing results
-  | "awaiting_approval" // Waiting for user input or approval
+  | "awaiting_approval" // Waiting for the user to approve an action
+  | "awaiting_clarification" // Paused, needs the user to answer blocking questions
+  | "waiting_response" // Paused, waiting for an external reply the user must relay
+  | "paused" // Manually paused by the user
   | "completed" // Completed
+  | "partially_completed" // Some steps done; blocked on something outside Volo
   | "failed"; // Failed with an explanation
 
 export const TASK_STATUS_LABEL: Record<TaskStatus, string> = {
@@ -25,7 +29,11 @@ export const TASK_STATUS_LABEL: Record<TaskStatus, string> = {
   extracting: "Extracting information",
   comparing: "Comparing results",
   awaiting_approval: "Waiting for approval",
+  awaiting_clarification: "Needs a couple of answers",
+  waiting_response: "Waiting for a reply",
+  paused: "Paused",
   completed: "Completed",
+  partially_completed: "Partially completed",
   failed: "Failed",
 };
 
@@ -36,21 +44,34 @@ export type StepStatus =
   | "done"
   | "skipped"
   | "failed"
-  | "blocked_on_approval";
+  | "blocked_on_approval"
+  | "waiting"; // paused waiting for an external reply the user must relay
 
-/** Tools the engine can invoke for a step. Kept small + honest for the MVP. */
+/**
+ * Tools the engine can invoke for a step. This is the modular capability set the
+ * planner dynamically selects from — web research is only a few of these. Each
+ * name maps to an ExecutableTool in the tool kit (src/lib/tools/kit.ts).
+ */
 export type ToolName =
+  // ── Reasoning / research (free, automatic) ──
   | "reason" // pure model/rule reasoning, no external calls
   | "web_search" // ResearchProvider.search
   | "fetch_page" // ResearchProvider.fetch + extract
+  | "read_document" // read a specific public URL/document as evidence
   | "extract_structured" // turn page content into structured rows
-  | "compare" // rank/compare structured rows
-  | "draft_email" // prepare an email draft (no send)
+  | "compare" // rank/compare candidate entities
+  | "combine_domains" // join ranked candidates across sub-plans (multi-domain)
+  // ── Preparation (free, automatic, no external side effects) ──
+  | "draft_email" // prepare an email draft (never sends)
+  | "create_reminder" // store a local reminder on the objective
   | "await_approval" // pause for explicit user approval
   // ── Consequential actions (declared surface; gated behind approval) ──
   | "send_email"
   | "submit_form"
-  | "book";
+  | "book"
+  | "payment"
+  | "monitor_inbox"
+  | "calendar_event";
 
 /** A single structured step in the execution plan (Phase 4). */
 export interface PlanStep {
@@ -59,6 +80,12 @@ export interface PlanStep {
   tool: ToolName;
   input: Record<string, unknown>;
   status: StepStatus;
+  /**
+   * Sub-plan this step belongs to (multi-domain objectives). When set, the step
+   * operates in that sub-plan's scope (its own constraints/results/comparison).
+   * Undefined = global scope (single-domain — unchanged behavior).
+   */
+  group?: string;
   /** Free-form output payload produced by the step. */
   output?: unknown;
   /** URLs / references that back this step's output. */
@@ -90,6 +117,12 @@ export interface Source {
  */
 export interface ResultItem {
   id: string;
+  /**
+   * Whether this row is an actual candidate entity that could satisfy the
+   * objective, or merely information extracted from a source document. Only
+   * "candidate" rows are counted and ranked as options.
+   */
+  kind: "candidate" | "information";
   /** Primary label, e.g. the instructor / restaurant / product name. */
   name: string;
   /** Domain-specific columns, e.g. { price: "$45/hr", availability: "..." }. */
@@ -110,15 +143,143 @@ export interface ResultItem {
 export interface Comparison {
   /** Column keys, in display order. Derived from ResultItem.attributes. */
   columns: string[];
+  /** Only real candidate entities (never informational rows). */
   items: ResultItem[];
   /** IDs of the top picks, in order. */
   recommendedIds: string[];
   /** Plain-language summary of how the ranking was made. */
   rationale: string;
+  /** Label for one candidate, e.g. "driving instructor". */
+  entityLabel: string;
+  /** How many pages were read but set aside as information, not candidates. */
+  informationCount: number;
+}
+
+/**
+ * A sub-plan for a multi-domain / combinatorial objective (BL-2). Each is an
+ * independent research task (one "category") with its own scope. The model
+ * authors the labels and queries dynamically — nothing domain-specific here.
+ */
+export interface SubPlan {
+  id: string;
+  /** Short, model-authored category name, e.g. "transport", "accommodation". */
+  label: string;
+  /** The sub-objective / search focus. */
+  objective: string;
+  /** Mini-constraints (own domain/entityLabel/keywords) for this category. */
+  constraints: TaskConstraints;
+  results: ResultItem[];
+  comparison?: Comparison;
+  status: "pending" | "running" | "done" | "failed";
+}
+
+/** One cross-domain combination (one pick per sub-plan). */
+export interface CombinedOption {
+  id: string;
+  picks: {
+    subPlanId: string;
+    label: string;
+    itemId: string;
+    name: string;
+    price: number | null;
+    evidenceUrl?: string;
+  }[];
+  /** Sum of known prices across picks (null when no pick had a price). */
+  totalPrice: number | null;
+  /** True when totalPrice is known AND within the shared budget (if any). */
+  withinBudget: boolean;
+  /** Whether every pick contributed a price (else the total is a lower bound). */
+  priceComplete: boolean;
+  score: number;
+  /** Plain-language trade-off note for this combination. */
+  rationale: string;
+}
+
+/** The join result for a multi-domain objective. */
+export interface Combination {
+  options: CombinedOption[];
+  recommendedIds: string[];
+  /** Shared budget applied to the total, if the objective set one. */
+  budget?: number;
+  priceUnit?: string;
+  rationale: string;
+  /** Sub-plan labels that produced no usable options (honest gaps). */
+  missing: string[];
 }
 
 /** Permission classification for tools/actions (Phase 7). */
 export type PermissionLevel = "research" | "recommend" | "action";
+
+// ── Real-action execution (Phase 10 hardening) ───────────────────────────────
+
+/** Capabilities Volo can be asked to actually perform. */
+export type ActionCapability = "send_email" | "calendar_event" | "book" | "submit_form" | "payment";
+
+/**
+ * How an objective should be executed, decided by the routing layer BEFORE any
+ * research/planning. Generic across domains — the classifier looks at the verb,
+ * the presence of a concrete action target, and the required parameters of an
+ * executable capability, never at a specific domain.
+ *   research       — acquire/compare real entities, or learn a procedure
+ *   direct_action  — a concrete, executable action with a supplied target
+ *   mixed          — research first, THEN an action on the chosen result
+ *   informational  — synthesize an answer from sources; no action
+ */
+export type ObjectiveRoute = "research" | "direct_action" | "mixed" | "informational";
+
+/**
+ * A recognised direct executable action: the user supplied a concrete target and
+ * (some of) the structured parameters an executable capability needs. Values are
+ * taken VERBATIM from the objective — never rewritten with generic objective text
+ * or fabricated. `requiredMissing` lists parameters that are genuinely absent, so
+ * Volo asks only for those (and nothing it already has).
+ */
+export interface DirectAction {
+  capability: ActionCapability;
+  /** The validated concrete target (recipient email, URL…). "" for capabilities that need none (calendar). */
+  target: string;
+  /** Exact user-provided parameters (e.g. { subject, body } | { title, date }). Verbatim. */
+  params: Record<string, string>;
+  /** Required parameters/fields that are still missing (drives minimal clarification). */
+  requiredMissing: string[];
+  /** True only when the user explicitly asked to monitor/await a reply. */
+  monitor: boolean;
+}
+
+/**
+ * The outcome of attempting a real action. Deliberately richer than a boolean so
+ * the product can tell the truth: a draft/steps is NOT "succeeded", and a
+ * timeout is `uncertain` (never silently retried → no duplicate charge/booking).
+ */
+export type ActionStatus =
+  | "succeeded" // the external side effect really happened (with confirmation)
+  | "failed" // attempted and failed cleanly (safe to retry)
+  | "unsupported" // no real integration configured — honest, degrade gracefully
+  | "uncertain" // may or may not have happened — must be verified, do NOT retry
+  | "requires_user" // needs user auth/3DS/OTP/CAPTCHA — handed back safely
+  | "duplicate"; // already executed for this idempotency key — not repeated
+
+/** A financial commitment's exact terms — shown before any money moves. */
+export interface FinancialQuote {
+  total: number;
+  currency: string;
+  fees?: number;
+  taxes?: number;
+  refundPolicy?: string;
+  /** Masked/non-sensitive payment method label only (never raw card data). */
+  account?: string;
+}
+
+/** Structured result of a real action attempt (stored for idempotency). */
+export interface ActionResult {
+  status: ActionStatus;
+  message: string;
+  /** Provider confirmation/reference id — real proof the action happened. */
+  confirmation?: string;
+  /** Safe artifact (e.g. .eml draft, .ics, exact steps) when not performed. */
+  artifact?: unknown;
+  at: number;
+}
 
 /** A pending action that needs explicit user approval before it runs. */
 export interface ApprovalRequest {
@@ -137,6 +298,10 @@ export interface ApprovalRequest {
   status: "pending" | "approved" | "rejected";
   createdAt: number;
   decidedAt?: number;
+  /** Present when this action commits money — shown for explicit confirmation. */
+  financial?: FinancialQuote;
+  /** The result of executing this action (set after approval). */
+  result?: ActionResult;
 }
 
 /** An honest, append-only log entry for the execution timeline (Phase 2/9). */
@@ -156,6 +321,8 @@ export interface TimelineEvent {
 export interface Task {
   id: string;
   objective: string;
+  /** Short, human-readable label derived from the objective (dashboard title). */
+  title: string;
   status: TaskStatus;
   createdAt: number;
   updatedAt: number;
@@ -175,10 +342,106 @@ export interface Task {
   modelProvider?: string;
   /** Which research provider actually ran. */
   researchProvider?: string;
+  /** Whether the plan was authored by the model or the deterministic planner. */
+  plannerUsed?: "model" | "rule";
+  /** The planner's one-line rationale (model-authored when plannerUsed=model). */
+  planRationale?: string;
+  /** The general goal model (understanding, hard/soft, missing info). */
+  goal?: GoalModel;
+  /** How the objective was routed (research / direct_action / mixed / informational). */
+  route?: ObjectiveRoute;
+  /** Set when the objective is a recognised direct executable action. */
+  directAction?: DirectAction;
+  /** Blocking questions awaiting the user's answers (awaiting_clarification). */
+  clarifications?: Clarification[];
+  /** Answers the user gave, merged into the effective objective on resume. */
+  clarificationContext?: string;
+  /** True when the objective was decomposed into cross-domain sub-plans (BL-2). */
+  multiDomain?: boolean;
+  /** Independent research sub-plans, when multiDomain. */
+  subPlans?: SubPlan[];
+  /** The cross-domain combination/join result, when multiDomain. */
+  combination?: Combination;
+  /**
+   * Set when the objective is paused waiting for an external reply Volo cannot
+   * fetch for free (e.g. a provider's email response). Persists across restarts;
+   * cleared when the user relays the reply and execution resumes.
+   */
+  waiting?: WaitState;
+  /** External replies the user has relayed, in order (honest provenance). */
+  externalEvents?: ExternalEvent[];
+  /**
+   * Idempotency ledger: results of already-executed actions keyed by
+   * `${taskId}:${approvalId}`. Guarantees an action (e.g. a payment/booking) is
+   * never performed twice, even across retries/restarts.
+   */
+  executedActions?: Record<string, ActionResult>;
+}
+
+/** A persistent "waiting for an external event" checkpoint (Phase 9). */
+export interface WaitState {
+  /** The plan step (a monitor/wait tool) that is blocked. */
+  stepId: string;
+  /** What Volo is waiting for, shown to the user. */
+  prompt: string;
+  since: number;
+}
+
+/** An external reply the user relayed so Volo could resume. */
+export interface ExternalEvent {
+  at: number;
+  text: string;
+}
+
+/**
+ * A missing-information item the understanding stage surfaced. `importance`
+ * decides whether Volo must ask the user before executing:
+ *   blocking     — execution can't safely proceed without it → ask the user
+ *   optional     — helpful but not required → proceed, note the assumption
+ *   researchable — Volo can find it itself → don't ask, research it
+ */
+export interface Clarification {
+  id: string;
+  question: string;
+  importance: "blocking" | "optional" | "researchable";
+  /** Filled in once the user answers (blocking questions). */
+  answer?: string;
+}
+
+/**
+ * The general goal model produced by the understanding stage (BL-2 / goal
+ * understanding). Domain-agnostic: it holds hard constraints (must be satisfied),
+ * soft preferences (used to rank, not filter), assumptions Volo is making, and
+ * any missing information. The planner consumes this rather than hardcoding
+ * domain logic.
+ */
+export interface GoalModel {
+  /** A plain-language restatement of what the user actually wants. */
+  summary: string;
+  /** Hard constraints — must hold (e.g. "total under $3,500", "4 nights"). */
+  hard: string[];
+  /** Soft preferences — nice to have; used to rank (e.g. "central", "cheap"). */
+  soft: string[];
+  /** Assumptions Volo is making in the absence of information. */
+  assumptions: string[];
+  /** Missing-information items, classified by importance. */
+  clarifications: Clarification[];
+  /** Which understanding stage produced this. */
+  source: "model" | "rule";
 }
 
 /** Parsed intent + constraints (Phase 4, understanding stage). */
 export interface TaskConstraints {
+  /**
+   * What the objective ultimately wants:
+   *   candidates — acquire/compare real entities (providers, products)
+   *   procedure  — learn a how-to / process (cancel, return, set up)
+   *   answer     — an informational answer synthesized from sources
+   * This drives whether extracted rows are treated as candidates or information.
+   */
+  outcome: "candidates" | "procedure" | "answer";
+  /** Human label for one candidate (e.g. "driving instructor", "step"). */
+  entityLabel: string;
   /** Detected domain, drives which columns we extract. */
   domain: "instructors" | "restaurants" | "products" | "flights" | "howto" | "general";
   location?: string;
@@ -195,6 +458,21 @@ export interface TaskConstraints {
   keywords: string[];
   /** Raw noteworthy requirements the user stated. */
   requirements: string[];
+  /** Soft preferences (from the goal model) used to RANK, not filter. */
+  softPrefs?: string[];
+  /**
+   * Known quantities used to normalize per-X prices to a comparable total
+   * (generic: person/night/unit/item/use/hour/month). Domain-agnostic.
+   */
+  quantities?: {
+    person?: number;
+    night?: number;
+    unit?: number;
+    item?: number;
+    use?: number;
+    hour?: number;
+    month?: number;
+  };
 }
 
 /** The final outcome object (Phase 6/9). */
@@ -207,6 +485,27 @@ export interface FinalResult {
   limitations: string[];
   /** Actions offered to the user that require approval. */
   offeredActions: string[];
+  /** The single concrete next step to move the objective forward. */
+  nextAction?: string;
+  /** True only when an AI model actually wrote the summary prose (honesty). */
+  modelUsed?: boolean;
+}
+
+/** Lightweight objective summary for the dashboard list (derived from a Task). */
+export interface ObjectiveSummary {
+  id: string;
+  title: string;
+  objective: string;
+  status: TaskStatus;
+  createdAt: number;
+  updatedAt: number;
+  /** 0..1 fraction of plan steps finished. */
+  progress: number;
+  pendingApprovals: number;
+  needsInput: boolean;
+  nextAction: { label: string; actor: "user" | "system" | "none" };
+  /** Most recent timeline message, for "last activity". */
+  lastActivity?: string;
 }
 
 /** Server-Sent-Events payload shapes for the live execution stream. */

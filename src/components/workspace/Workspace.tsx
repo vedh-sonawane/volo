@@ -1,20 +1,26 @@
 "use client";
 
 import Link from "next/link";
+import { useCallback, useState } from "react";
 import type { Task } from "@/lib/types";
 import { useTaskStream } from "@/components/useTaskStream";
 import { Wordmark } from "@/components/Wordmark";
-import { STATUS_META } from "@/lib/ui";
+import { STATUS_META, nextActionFor } from "@/lib/ui";
 import { Stepper } from "./Stepper";
 import { PlanList } from "./PlanList";
 import { Timeline } from "./Timeline";
 import { Sources } from "./Sources";
 import { ComparisonPanel } from "./Comparison";
+import { MultiDomainPanel } from "./MultiDomain";
 import { FinalResult } from "./FinalResult";
 import { Approvals } from "./Approvals";
+import { WaitingCard } from "./WaitingCard";
+import { ClarifyCard } from "./ClarifyCard";
 
 export function Workspace({ taskId }: { taskId: string }) {
-  const { task, connected, error } = useTaskStream(taskId);
+  const [reloadToken, setReloadToken] = useState(0);
+  const reload = useCallback(() => setReloadToken((t) => t + 1), []);
+  const { task, connected, error } = useTaskStream(taskId, reloadToken);
 
   if (error && !task) return <CenterMessage title="Couldn't load this task" body={error} />;
   if (!task) return <LoadingState />;
@@ -44,6 +50,7 @@ export function Workspace({ taskId }: { taskId: string }) {
           <div className="mt-4">
             <Stepper task={task} />
           </div>
+          <NextActionBar task={task} />
           <ConstraintsRow task={task} />
         </div>
 
@@ -60,9 +67,12 @@ export function Workspace({ taskId }: { taskId: string }) {
         {/* Two-column layout: outcome/results (main) + execution (aside) */}
         <div className="mt-8 grid lg:grid-cols-[1fr_380px] gap-6 items-start">
           <div className="flex flex-col gap-6 min-w-0">
+            <ClarifyCard task={task} onAnswered={reload} />
+            <GoalPanel task={task} />
             <FinalResult task={task} />
-            <Approvals task={task} />
-            <ComparisonPanel task={task} />
+            <WaitingCard task={task} onResumed={reload} />
+            <Approvals task={task} onDecided={reload} />
+            {task.multiDomain ? <MultiDomainPanel task={task} /> : <ComparisonPanel task={task} />}
             {!task.finalResult && running && <ResultsSkeleton />}
             <Sources task={task} />
           </div>
@@ -92,6 +102,68 @@ function StatusBadge({ task, live }: { task: Task; live: boolean }) {
   );
 }
 
+function GoalPanel({ task }: { task: Task }) {
+  const g = task.goal;
+  if (!g || (g.hard.length === 0 && g.soft.length === 0 && g.assumptions.length === 0)) return null;
+  return (
+    <section className="card p-5">
+      <div className="eyebrow mb-2">Understanding</div>
+      <p className="text-[14px] text-[var(--color-ink-soft)] leading-relaxed">{g.summary}</p>
+      <div className="mt-4 grid sm:grid-cols-2 gap-4">
+        {g.hard.length > 0 && (
+          <div>
+            <div className="eyebrow mb-1.5" style={{ color: "var(--color-err)" }}>Must (hard)</div>
+            <ul className="flex flex-col gap-1">
+              {g.hard.map((h, i) => (
+                <li key={i} className="text-[12.5px] text-[var(--color-ink-soft)] flex gap-1.5"><span className="text-[var(--color-err)]">•</span>{h}</li>
+              ))}
+            </ul>
+          </div>
+        )}
+        {g.soft.length > 0 && (
+          <div>
+            <div className="eyebrow mb-1.5" style={{ color: "var(--color-accent-ink)" }}>Prefer (soft)</div>
+            <ul className="flex flex-col gap-1">
+              {g.soft.map((s, i) => (
+                <li key={i} className="text-[12.5px] text-[var(--color-ink-soft)] flex gap-1.5"><span className="text-[var(--color-accent-ink)]">•</span>{s}</li>
+              ))}
+            </ul>
+          </div>
+        )}
+      </div>
+      {g.assumptions.length > 0 && (
+        <div className="mt-3 border-t pt-3">
+          <div className="eyebrow mb-1.5">Assuming</div>
+          <ul className="flex flex-col gap-1">
+            {g.assumptions.map((a, i) => (
+              <li key={i} className="text-[12px] text-[var(--color-muted)]">{a}</li>
+            ))}
+          </ul>
+        </div>
+      )}
+    </section>
+  );
+}
+
+function NextActionBar({ task }: { task: Task }) {
+  const next = nextActionFor(task);
+  if (next.actor === "none") return null;
+  const color =
+    next.actor === "user" ? "var(--color-warn)" : "var(--color-run)";
+  return (
+    <div className="mt-4 flex items-center gap-2.5 text-[13px]">
+      <span className="eyebrow" style={{ color: "var(--color-faint)" }}>Next</span>
+      <span
+        className="px-2.5 py-1 rounded-md font-[550]"
+        style={{ color, background: `color-mix(in srgb, ${color} 12%, transparent)` }}
+      >
+        {next.actor === "user" ? "You: " : "Volo: "}
+        {next.label}
+      </span>
+    </div>
+  );
+}
+
 function ConstraintsRow({ task }: { task: Task }) {
   const c = task.constraints;
   const chips: string[] = [];
@@ -113,20 +185,34 @@ function ConstraintsRow({ task }: { task: Task }) {
 }
 
 function ProviderNote({ task }: { task: Task }) {
+  const model = task.modelProvider || "rule";
+  const nSources = task.sources.length;
   return (
     <div className="text-[11.5px] text-[var(--color-faint)] leading-relaxed px-1">
       <div className="flex items-center gap-2 flex-wrap">
         <span>research: <span className="font-[var(--font-mono)]">{task.researchProvider || "duckduckgo"}</span></span>
         <span>·</span>
-        <span>model: <span className="font-[var(--font-mono)]">{task.modelProvider || "rule"}</span></span>
+        <span>model: <span className="font-[var(--font-mono)]">{model}</span></span>
       </div>
-      <p className="mt-1.5">
-        {task.modelProvider === "rule" || !task.modelProvider
-          ? "Running in degraded mode (no AI model configured). Extraction and comparison are fully deterministic and honest."
-          : "A local model enriched the summary; all facts remain sourced from real pages."}
-      </p>
+      <p className="mt-1.5">{providerExplanation(task, model, nSources)}</p>
     </div>
   );
+}
+
+// Honest, state-accurate explanation of what each provider actually did.
+function providerExplanation(task: Task, model: string, nSources: number): string {
+  if (!task.finalResult) {
+    return "The deterministic engine runs search, extraction, and comparison. A model, if enabled, only rewrites the final summary from already-extracted facts — it is never used to invent data.";
+  }
+  if (task.finalResult.modelUsed) {
+    return `The ${model} model rewrote the summary using only the ${nSources} page${nSources === 1 ? "" : "s"} actually read. Every value in the table above is extracted from those pages, not generated.`;
+  }
+  if (model !== "rule") {
+    return nSources === 0
+      ? `The ${model} model was available but was NOT used here — no pages were read, so there was nothing to summarize. Nothing was fabricated.`
+      : `The ${model} model was available but was NOT used for the summary this time. The honest deterministic summary is shown; nothing was fabricated.`;
+  }
+  return "No AI model is configured, so the deterministic engine produced this. Extraction and comparison are rule-based, and nothing is invented.";
 }
 
 function ResultsSkeleton() {
