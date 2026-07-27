@@ -2,7 +2,7 @@
 // honest status computed from REAL checks — a sandbox provider never makes a
 // production capability look available, and "connected" only when it can execute.
 
-import { cfg, secretConfigured } from "./index";
+import { cfg, secret, secretConfigured } from "./index";
 import { smtpConfigured } from "@/lib/providers/email";
 import { SmtpEmailProvider } from "@/lib/providers/email/smtp";
 import { getResearchProvider } from "@/lib/providers/research";
@@ -86,7 +86,20 @@ export async function computeCapabilities(deep = false): Promise<Capability[]> {
   const sandbox = cfg("ACTION_MODE", "").toLowerCase() === "sandbox";
   caps.push({ key: "book", label: "Booking", status: sandbox ? "sandbox_only" : "unsupported", detail: sandbox ? "Test mode: simulates a booking (no real reservation, no money)." : "No real booking integration — Volo gives you the exact steps to book yourself. It will never claim a booking was made." });
   caps.push({ key: "submit_form", label: "Form submission", status: sandbox ? "sandbox_only" : "unsupported", detail: sandbox ? "Test mode: simulates a form submission." : "No safe generic form-submission integration — Volo prepares the fields for you to submit." });
-  caps.push({ key: "payment", label: "Payments", status: sandbox ? "sandbox_only" : "unsupported", detail: sandbox ? "Test mode: simulates a payment (no card, no money)." : "No secure payment integration — Volo will NEVER charge a card. It never stores card/CVV/OTP." });
+  // Payments: prefer a real Stripe TEST integration (free, no real money) when a
+  // test key is configured; else the sandbox double; else honest "unsupported".
+  const stripeKey = (secretConfigured("STRIPE_SECRET_KEY") ? secret("STRIPE_SECRET_KEY") : "").trim();
+  const stripeTest = stripeKey.startsWith("sk_test_");
+  const stripeLive = stripeKey.startsWith("sk_live_");
+  caps.push(
+    stripeTest
+      ? { key: "payment", label: "Payments (Stripe test mode)", status: "connected", detail: "Real Stripe TEST API with your test key — creates a real PaymentIntent with a test card. NO real money moves. Volo never stores card/CVV/OTP.", verified: false }
+      : stripeLive
+        ? { key: "payment", label: "Payments", status: "connection_failed", detail: "A LIVE Stripe key is configured — Volo refuses it so no real money can move. Replace it with a test key (sk_test_…)." }
+        : sandbox
+          ? { key: "payment", label: "Payments (sandbox)", status: "sandbox_only", detail: "Simulated payments (no card, no money). Add a Stripe TEST key in Settings for real free test-mode payments." }
+          : { key: "payment", label: "Payments", status: "unsupported", detail: "No payment integration — Volo will NEVER charge a card. Add a free Stripe TEST key (sk_test_…) in Settings, or complete payments yourself. It never stores card/CVV/OTP." }
+  );
 
   // ── Inbox monitoring ──
   caps.push({ key: "monitor", label: "Reply monitoring", status: "requires_user", detail: "Volo can't watch a mailbox — after a real send, you paste the reply and it continues." });
@@ -97,7 +110,9 @@ export async function computeCapabilities(deep = false): Promise<Capability[]> {
 async function probeResearch(): Promise<boolean> {
   try {
     const r = await getResearchProvider().search("site connectivity test", 2);
-    return r.length > 0;
+    // Reachable when the provider responded — results OR a genuine empty. A
+    // rate-limit / timeout / error means it's not usable right now.
+    return r.status === "ok" || r.status === "empty";
   } catch {
     return false;
   }

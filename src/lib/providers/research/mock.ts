@@ -8,7 +8,7 @@
 // full pipeline is exercised honestly. It is clearly labelled as mock in the UI.
 // ─────────────────────────────────────────────────────────────────────────────
 
-import type { FetchedPage, ResearchProvider, SearchResult } from "./types";
+import type { FetchedPage, ResearchProvider, SearchResponse, SearchResult } from "./types";
 import { extractReadable } from "./extract";
 
 interface Fixture {
@@ -258,7 +258,7 @@ const FIXTURES: Fixture[] = [
 export class MockResearchProvider implements ResearchProvider {
   readonly name = "mock";
 
-  async search(query: string, limit = 8): Promise<SearchResult[]> {
+  async search(query: string, limit = 8): Promise<SearchResponse> {
     const q = query.toLowerCase();
     const scored = FIXTURES.map((f) => {
       let score = 0;
@@ -268,7 +268,8 @@ export class MockResearchProvider implements ResearchProvider {
       .filter((x) => x.score > 0)
       .sort((a, b) => b.score - a.score);
     const chosen = (scored.length ? scored : FIXTURES.map((f) => ({ f, score: 0 }))).slice(0, limit);
-    return chosen.map(({ f }) => ({ url: f.url, title: f.title, snippet: f.snippet }));
+    const results: SearchResult[] = chosen.map(({ f }) => ({ url: f.url, title: f.title, snippet: f.snippet }));
+    return { results, status: results.length ? "ok" : "empty", via: "mock" };
   }
 
   async fetch(url: string): Promise<FetchedPage> {

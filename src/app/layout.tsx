@@ -8,14 +8,26 @@ export const metadata: Metadata = {
 };
 
 export const viewport: Viewport = {
-  themeColor: "#fbfaf7",
   width: "device-width",
   initialScale: 1,
 };
 
+// Set the theme BEFORE first paint (no flash). Respects a saved choice, else the
+// OS preference. Kept tiny and inline so it runs synchronously in <head>.
+const themeScript = `
+(function(){try{
+  var t = localStorage.getItem('volo-theme');
+  if(t!=='light'&&t!=='dark'){t = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';}
+  document.documentElement.dataset.theme = t;
+}catch(e){document.documentElement.dataset.theme='light';}})();
+`;
+
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
-    <html lang="en">
+    <html lang="en" suppressHydrationWarning>
+      <head>
+        <script dangerouslySetInnerHTML={{ __html: themeScript }} />
+      </head>
       <body>{children}</body>
     </html>
   );

@@ -11,11 +11,41 @@
 // this selection later; the tool/engine architecture is the same either way.)
 // ─────────────────────────────────────────────────────────────────────────────
 
-import type { PlanStep, SubPlan, TaskConstraints } from "@/lib/types";
+import type { DirectAction, PlanStep, SubPlan, TaskConstraints } from "@/lib/types";
 import { id } from "@/lib/util";
 import { schemaFor } from "./domains";
 import { detectActions } from "./classify";
 import { understand } from "./understand";
+import { capabilityLabel } from "./action-router";
+import { inferOutcomeNeeds } from "./paths";
+
+/**
+ * Decide the approval-gated action tail for a RESEARCH plan, generically. It
+ * fires not only on explicit action verbs but when the OUTCOME implies engaging a
+ * party (a quote, a response, a resolution) — so indirect wording works without
+ * the user naming a capability. It never runs anything: the action is always
+ * gated behind explicit approval downstream.
+ */
+interface ActionTail {
+  wants: boolean;
+  tool: "send_email" | "book" | "submit_form";
+  isRequest: boolean;
+  awaitReply: boolean;
+}
+function resolveActionTail(objective: string, c: TaskConstraints): ActionTail {
+  const a = detectActions(objective);
+  const needs = inferOutcomeNeeds(objective, c);
+  const tool: ActionTail["tool"] = a.book ? "book" : a.submit ? "submit_form" : "send_email";
+  // Reaching a party (inferred from the outcome) counts as wanting to contact —
+  // this is the generic research → communicate fallback path.
+  const wants = a.contact || a.book || a.submit || needs.reachParty;
+  return {
+    wants,
+    tool,
+    isRequest: c.outcome === "procedure" || a.submit,
+    awaitReply: a.awaitReply || (wants && tool === "send_email"),
+  };
+}
 
 function step(partial: Omit<PlanStep, "id" | "status" | "sources">): PlanStep {
   return { id: id("s_"), status: "pending", sources: [], ...partial };
@@ -59,22 +89,21 @@ function urlsIn(objective: string): string[] {
   return objective.match(/https?:\/\/[^\s"']+/g) ?? [];
 }
 
-/** Append the (approval-gated) action tail if the objective asks to act. */
-function appendActions(plan: PlanStep[], objective: string, label: string, afterId: string) {
-  const actions = detectActions(objective);
-  if (!(actions.contact || actions.book || actions.submit)) return;
+/** Append the (approval-gated) action tail if the OUTCOME implies acting. */
+function appendActions(plan: PlanStep[], objective: string, c: TaskConstraints, label: string, afterId: string) {
+  const t = resolveActionTail(objective, c);
+  if (!t.wants) return;
   const draft = step({
-    description: actions.submit || actions.book ? "Prepare the request/message needed to act" : `Draft an enquiry to the top ${label}`,
+    description: t.isRequest ? "Prepare the request/message needed to act" : `Draft an enquiry to the top ${label}`,
     tool: "draft_email",
     input: {},
     dependsOn: [afterId],
   });
   plan.push(draft);
-  const actionTool = actions.book ? "book" : actions.submit ? "submit_form" : "send_email";
-  const actionDesc = actions.book ? `Make the booking` : actions.submit ? "Submit the request" : `Send the enquiry`;
-  const actionStep = step({ description: `${actionDesc} — requires your approval`, tool: actionTool, input: { needs: "approval" }, dependsOn: [draft.id] });
+  const actionDesc = t.tool === "book" ? `Make the booking` : t.tool === "submit_form" ? "Submit the request" : `Send the enquiry to the discovered party`;
+  const actionStep = step({ description: `${actionDesc} — requires your approval`, tool: t.tool, input: { needs: "approval" }, dependsOn: [draft.id] });
   plan.push(actionStep);
-  if (actions.awaitReply) {
+  if (t.awaitReply) {
     plan.push(step({ description: "Wait for and read the reply, then continue", tool: "monitor_inbox", input: {}, dependsOn: [actionStep.id] }));
   }
 }
@@ -130,15 +159,95 @@ export function buildMultiPlan(
   });
   plan.push(combine);
 
-  appendActions(plan, objective, c.entityLabel || "option", combine.id);
+  appendActions(plan, objective, c, c.entityLabel || "option", combine.id);
 
   return { plan, subPlans };
+}
+
+/**
+ * Build a DIRECT-ACTION plan: no research, no candidate extraction, no
+ * comparison. Just validate → prepare the exact action preview → (approval-gated)
+ * execute → optionally wait for a reply (only if the user asked). The user's
+ * supplied parameters are carried on task.directAction and preserved verbatim by
+ * the preparation/approval/execution steps — never rewritten or fabricated.
+ */
+export function buildDirectActionPlan(objective: string, c: TaskConstraints, action: DirectAction): PlanStep[] {
+  const plan: PlanStep[] = [];
+  const label = capabilityLabel(action.capability);
+
+  const reason = step({
+    description: `Validate the ${label} parameters you provided`,
+    tool: "reason",
+    input: { objective, constraints: c },
+    dependsOn: [],
+  });
+  plan.push(reason);
+  let lastId = reason.id;
+
+  // A dedicated preparation step for email produces the exact, reviewable draft
+  // (.eml) from the user's own recipient/subject/body. Other capabilities are
+  // previewed directly at the approval step from the supplied parameters.
+  if (action.capability === "send_email") {
+    const prep = step({ description: `Prepare the exact email to ${action.target}`, tool: "draft_email", input: {}, dependsOn: [lastId] });
+    plan.push(prep);
+    lastId = prep.id;
+  }
+
+  const actDesc = directActionDescription(action);
+  const act = step({ description: `${actDesc} — requires your approval`, tool: action.capability, input: { needs: "approval" }, dependsOn: [lastId] });
+  plan.push(act);
+
+  // Reply monitoring ONLY when the user explicitly asked for it.
+  if (action.monitor && action.capability === "send_email") {
+    plan.push(step({ description: "Wait for and read the reply, then continue", tool: "monitor_inbox", input: {}, dependsOn: [act.id] }));
+  }
+
+  return plan;
+}
+
+function directActionDescription(action: DirectAction): string {
+  const p = action.params;
+  switch (action.capability) {
+    case "send_email":
+      return `Send the email to ${action.target}`;
+    case "calendar_event":
+      return `Export a calendar file for "${p.title || "the event"}"`;
+    case "submit_form":
+      return `Submit the form at ${action.target}`;
+    case "book":
+      return `Book ${action.target}`;
+    case "payment":
+      return `Pay ${[p.currency, p.amount].filter(Boolean).join(" ") || "the amount"} to ${action.target}`;
+  }
+}
+
+/**
+ * Guarantee an approval-gated action tail exists on an already-authored research
+ * plan (used for MIXED objectives: research → compare → approve → act). Safe to
+ * call repeatedly — it no-ops if the plan already ends in an action.
+ */
+export function appendActionTail(plan: PlanStep[], objective: string, c: TaskConstraints): void {
+  const hasAction = plan.some((s) => ["send_email", "submit_form", "book", "payment"].includes(s.tool));
+  if (hasAction) return;
+  const afterId = plan[plan.length - 1]?.id ?? "";
+  appendActions(plan, objective, c, c.entityLabel || "option", afterId);
+}
+
+/**
+ * Build a DIRECT-ANSWER plan for an informational/creative request: interpret,
+ * then compose the answer directly. NO web_search / fetch / extract / compare /
+ * combine — the response comes from knowledge/generation, so a search-provider
+ * failure or rate-limit can never turn this into a failed research objective.
+ */
+export function buildDirectAnswerPlan(objective: string, c: TaskConstraints): PlanStep[] {
+  const reason = step({ description: "Understand the request", tool: "reason", input: { objective, constraints: c }, dependsOn: [] });
+  const answer = step({ description: "Compose a direct answer (no web research needed)", tool: "direct_answer", input: {}, dependsOn: [reason.id] });
+  return [reason, answer];
 }
 
 export function createPlan(objective: string, c: TaskConstraints): PlanStep[] {
   const schema = schemaFor(c.domain, c.outcome);
   const label = c.entityLabel || "option";
-  const actions = detectActions(objective);
   const plan: PlanStep[] = [];
 
   // 1) Always understand first.
@@ -211,15 +320,16 @@ export function createPlan(objective: string, c: TaskConstraints): PlanStep[] {
     lastResearch = compareStep.id;
   }
 
-  // 5) ACTION tools — appended ONLY when the objective actually asks to do
-  //    something beyond researching. This is what makes Volo an execution engine
-  //    rather than a research wrapper. Consequential steps require approval.
-  const wantsAction = actions.contact || actions.book || actions.submit;
-  if (wantsAction) {
+  // 5) ACTION tools — appended ONLY when the OUTCOME implies doing something
+  //    beyond researching (an explicit action verb, OR an inferred need to engage
+  //    a party — a quote, a response, a resolution). This is what makes Volo an
+  //    execution engine, and it works from indirect wording without the user
+  //    naming a capability. Consequential steps ALWAYS require approval.
+  const tail = resolveActionTail(objective, c);
+  if (tail.wants) {
     // Prepare the communication/artifact first (free, safe, automatic).
-    const isRequest = c.outcome === "procedure" || actions.submit;
     const draft = step({
-      description: isRequest
+      description: tail.isRequest
         ? "Prepare the request/message needed to act on this"
         : `Draft an enquiry to the top ${label}`,
       tool: "draft_email",
@@ -229,22 +339,21 @@ export function createPlan(objective: string, c: TaskConstraints): PlanStep[] {
     plan.push(draft);
 
     // Then the consequential action itself — gated behind approval.
-    const actionTool = actions.book ? "book" : actions.submit ? "submit_form" : "send_email";
-    const actionDesc = actions.book
+    const actionDesc = tail.tool === "book"
       ? `Book the chosen ${label}`
-      : actions.submit
+      : tail.tool === "submit_form"
         ? "Submit the request (application / cancellation)"
-        : `Send the enquiry to the ${label}`;
+        : `Contact the discovered party`;
     const actionStep = step({
       description: `${actionDesc} — requires your approval`,
-      tool: actionTool,
+      tool: tail.tool,
       input: { needs: "approval" },
       dependsOn: [draft.id],
     });
     plan.push(actionStep);
 
     // If a reply is expected, represent the wait explicitly.
-    if (actions.awaitReply) {
+    if (tail.awaitReply) {
       plan.push(step({
         description: "Wait for and read the provider's reply, then continue",
         tool: "monitor_inbox",

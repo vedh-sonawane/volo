@@ -55,6 +55,7 @@ export type StepStatus =
 export type ToolName =
   // ── Reasoning / research (free, automatic) ──
   | "reason" // pure model/rule reasoning, no external calls
+  | "direct_answer" // compose a direct informational/creative answer (no research)
   | "web_search" // ResearchProvider.search
   | "fetch_page" // ResearchProvider.fetch + extract
   | "read_document" // read a specific public URL/document as evidence
@@ -220,12 +221,13 @@ export type ActionCapability = "send_email" | "calendar_event" | "book" | "submi
  * research/planning. Generic across domains — the classifier looks at the verb,
  * the presence of a concrete action target, and the required parameters of an
  * executable capability, never at a specific domain.
- *   research       — acquire/compare real entities, or learn a procedure
+ *   direct_answer  — answer directly from knowledge/generation; NO web research
+ *   research       — acquire/compare real entities, or facts that need external/current data
  *   direct_action  — a concrete, executable action with a supplied target
  *   mixed          — research first, THEN an action on the chosen result
- *   informational  — synthesize an answer from sources; no action
+ *   informational  — (legacy) synthesize an answer from sources
  */
-export type ObjectiveRoute = "research" | "direct_action" | "mixed" | "informational";
+export type ObjectiveRoute = "direct_answer" | "research" | "direct_action" | "mixed" | "informational";
 
 /**
  * A recognised direct executable action: the user supplied a concrete target and
@@ -244,6 +246,46 @@ export interface DirectAction {
   requiredMissing: string[];
   /** True only when the user explicitly asked to monitor/await a reply. */
   monitor: boolean;
+}
+
+/**
+ * A generic, domain-agnostic class of capability Volo can use to move an
+ * objective forward. Reasoning happens over these abstractions — never over
+ * domain nouns — so the path planner works for any objective.
+ *   answer       — produce information/creative output directly (no external data)
+ *   research     — discover options / current facts / a party to engage, on the web
+ *   communicate  — reach a relevant party through a connected channel (approval-gated)
+ *   schedule     — put an event/reminder on a calendar
+ *   submit       — submit a form/application/cancellation to a target (approval-gated)
+ *   pay          — pay/transfer to a target (approval-gated)
+ */
+export type CapabilityId = "answer" | "research" | "communicate" | "schedule" | "submit" | "pay";
+
+/** Runtime availability of a capability (is it connected/usable right now?). */
+export interface CapabilityStatus {
+  id: CapabilityId;
+  available: boolean;
+  /** Human note: how it will behave / why it's unavailable (missing credential). */
+  detail?: string;
+}
+
+/**
+ * A candidate way to achieve the objective, chosen for RELEVANCE (not "because it
+ * exists"). Volo records these so path selection is explainable and so it can try
+ * a legitimate alternative if the preferred path fails.
+ */
+export interface ExecutionPath {
+  capability: CapabilityId;
+  /** Why this path is relevant to the user's actual outcome (explainable). */
+  rationale: string;
+  /** True when taking this path has an external consequence → needs approval. */
+  consequential: boolean;
+  /** True when the path needs a target/answer discovered by research first. */
+  dependsOnResearch: boolean;
+  /** Is the capability connected/usable right now? */
+  available: boolean;
+  /** Why it isn't usable (missing capability/credential), if unavailable. */
+  unavailableReason?: string;
 }
 
 /**
@@ -278,6 +320,19 @@ export interface ActionResult {
   confirmation?: string;
   /** Safe artifact (e.g. .eml draft, .ics, exact steps) when not performed. */
   artifact?: unknown;
+  /**
+   * True when NO real money moved / no real irreversible side effect occurred —
+   * i.e. a sandbox double OR a real provider's TEST mode (e.g. Stripe test keys).
+   * The UI must say so plainly and never imply real money moved.
+   */
+  simulated?: boolean;
+  /**
+   * How it ran, for precise honesty:
+   *   "sandbox" — Volo's built-in test double (no external call)
+   *   "test"    — a REAL connected provider in TEST mode (real API call, no real money)
+   *   "live"    — a real provider with real consequences (real money/booking)
+   */
+  mode?: "sandbox" | "test" | "live";
   at: number;
 }
 
@@ -352,10 +407,19 @@ export interface Task {
   route?: ObjectiveRoute;
   /** Set when the objective is a recognised direct executable action. */
   directAction?: DirectAction;
+  /** The relevant capability paths considered (for explainability + fallback). */
+  paths?: ExecutionPath[];
   /** Blocking questions awaiting the user's answers (awaiting_clarification). */
   clarifications?: Clarification[];
   /** Answers the user gave, merged into the effective objective on resume. */
   clarificationContext?: string;
+  /**
+   * Structured direct-action parameter answers, keyed by param name (recipient,
+   * subject, body…). Captured VERBATIM from clarification answers and applied
+   * directly to the action — so the exact user input reaches the payload without
+   * being re-parsed from concatenated question text.
+   */
+  directActionParams?: Record<string, string>;
   /** True when the objective was decomposed into cross-domain sub-plans (BL-2). */
   multiDomain?: boolean;
   /** Independent research sub-plans, when multiDomain. */
@@ -406,6 +470,13 @@ export interface Clarification {
   importance: "blocking" | "optional" | "researchable";
   /** Filled in once the user answers (blocking questions). */
   answer?: string;
+  /**
+   * When this question fills a DIRECT-ACTION parameter (recipient, subject, body,
+   * amount…), the param name. The answer is then stored VERBATIM against that
+   * param — never re-parsed from free text — so the user's exact input reaches the
+   * action payload unchanged (no template/question remnants leaking in).
+   */
+  param?: string;
 }
 
 /**

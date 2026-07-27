@@ -69,19 +69,25 @@ export class SmtpEmailProvider implements EmailProvider {
         message: `No valid recipient address (got "${msg.to}"). Nothing was sent — a draft is provided so you can fill in the real address and send it yourself.`,
       };
     }
+    // A valid FROM matters: most providers (e.g. Gmail) reject a message whose
+    // From isn't the authenticated account. Fall back to the auth user.
+    const from = (this.from || this.user || "").trim();
+    if (!from) {
+      return { sent: false, message: "No sender address configured (set SMTP_USER / SMTP_FROM). Nothing was sent." };
+    }
+    // A Subject header cannot contain CR/LF — collapse to a single line so a stray
+    // newline can never make the server reject the message (or enable injection).
+    const subject = String(msg.subject ?? "").replace(/[\r\n]+/g, " ").trim();
     try {
-      const info = await this.tx().sendMail({
-        from: this.from,
-        to: msg.to,
-        subject: msg.subject,
-        text: msg.body,
-      });
+      const info = await this.tx().sendMail({ from, to: msg.to, subject, text: msg.body });
       return { sent: true, id: info.messageId, message: `Sent to ${msg.to} via your configured SMTP account.` };
     } catch (e) {
+      const reason = e instanceof Error ? e.message : "send failed";
       return {
         sent: false,
-        message: "Your SMTP account rejected the message. Nothing was sent; a draft is provided instead.",
-        error: e instanceof Error ? e.message : "send failed",
+        // Surface the provider's actual reason so a real rejection is diagnosable.
+        message: `Your SMTP account rejected the message (${reason}). Nothing was sent; a draft is provided instead.`,
+        error: reason,
       };
     }
   }

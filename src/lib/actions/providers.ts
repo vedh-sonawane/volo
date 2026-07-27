@@ -112,20 +112,21 @@ export class SandboxAction implements ActionProvider {
   }
   async execute(input: ActionInput): Promise<ActionResult> {
     const probe = `${input.target} ${JSON.stringify(input.payload)}`.toLowerCase();
-    // Deterministic scenario selection from the input (for tests).
+    // Deterministic scenario selection from the input (for tests). Every outcome
+    // is flagged simulated=true so nothing can be mistaken for a real side effect.
     if (/\btimeout\b|\buncertain\b/.test(probe)) {
-      return { status: "uncertain", message: "The provider did not confirm in time. The action MAY have gone through — Volo will not retry (to avoid a duplicate). Verify before acting again.", at: now() };
+      return { status: "uncertain", simulated: true, mode: "sandbox", message: "[SANDBOX] The test provider did not confirm in time. The (simulated) action MAY have gone through — Volo will not retry. No real money moved.", at: now() };
     }
     if (/\b3ds\b|\botp\b|\bauth\b|captcha|verify/.test(probe)) {
-      return { status: "requires_user", message: "The provider requires you to authenticate (e.g. 3-D Secure / OTP). Volo paused safely — complete it in the provider's secure flow, never here.", at: now() };
+      return { status: "requires_user", simulated: true, mode: "sandbox", message: "[SANDBOX] The test provider requires authentication (e.g. 3-D Secure / OTP). Volo paused safely. No real money moved.", at: now() };
     }
     if (/\bdecline\b|\bfail\b|\berror\b|insufficient/.test(probe)) {
-      return { status: "failed", message: "The provider declined the request. Nothing was charged or booked. Safe to try again.", at: now() };
+      return { status: "failed", simulated: true, mode: "sandbox", message: "[SANDBOX] The test provider declined the request. Nothing was charged or booked (simulated). Safe to try again.", at: now() };
     }
     // Success — a realistic confirmation reference (fake, but structured).
     const ref = `SBX-${this.capability.toUpperCase()}-${Math.abs(hash(input.idempotencyKey)).toString(36).toUpperCase()}`;
     const money = input.financial ? ` ${input.financial.currency} ${input.financial.total}${input.financial.fees ? ` (+${input.financial.fees} fees)` : ""}` : "";
-    return { status: "succeeded", message: `[SANDBOX] ${labelFor(this.capability)} completed${money}. Confirmation ${ref}. (Test provider — no real money moved.)`, confirmation: ref, at: now() };
+    return { status: "succeeded", simulated: true, mode: "sandbox", message: `[SANDBOX] ${labelFor(this.capability)} simulated${money} for target "${input.target}". Confirmation ${ref}. This is a TEST provider — NO real money moved and nothing was really booked.`, confirmation: ref, at: now() };
   }
 }
 

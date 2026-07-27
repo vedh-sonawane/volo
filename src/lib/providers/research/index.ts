@@ -6,7 +6,7 @@ import { DuckDuckGoProvider } from "./duckduckgo";
 import { MockResearchProvider } from "./mock";
 import { cfg } from "@/lib/config";
 
-export type { ResearchProvider, SearchResult, FetchedPage } from "./types";
+export type { ResearchProvider, SearchResult, SearchResponse, SearchStatus, FetchedPage } from "./types";
 
 // Resolved per call (cheap) so a settings change takes effect without a restart.
 export function getResearchProvider(): ResearchProvider {

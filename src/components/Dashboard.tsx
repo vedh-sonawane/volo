@@ -6,6 +6,7 @@ import type { ObjectiveSummary } from "@/lib/types";
 import { STATUS_META, timeAgo } from "@/lib/ui";
 import { Wordmark } from "@/components/Wordmark";
 import { Composer } from "@/components/Composer";
+import { ThemeToggle } from "@/components/ThemeToggle";
 
 // The home screen is a persistent objective control center, not a chat log.
 // It renders ONLY real objectives fetched from the backend (the DB is the source
@@ -40,25 +41,28 @@ export function Dashboard() {
 
   return (
     <main className="min-h-screen">
-      <header className="max-w-5xl mx-auto px-6 h-16 flex items-center justify-between">
-        <Wordmark />
-        <div className="flex items-center gap-1">
-          <Link href="/settings" className="btn btn-quiet text-[13px]">Settings</Link>
+      <header className="sticky top-0 z-20 border-b glass" style={{ borderRadius: 0 }}>
+        <div className="max-w-5xl mx-auto px-6 h-16 flex items-center justify-between">
+          <Wordmark />
+          <div className="flex items-center gap-2">
+            <ThemeToggle />
+            <Link href="/settings" className="btn btn-quiet text-[13px]">Settings</Link>
+          </div>
         </div>
       </header>
       <FirstRunBanner />
 
       <div className="max-w-5xl mx-auto px-6 pb-24">
         {/* Composer */}
-        <section className="pt-6 pb-10">
+        <section className="pt-8 pb-10">
           <div className="eyebrow mb-3">New objective</div>
           <h1
-            className="mb-5"
-            style={{ fontSize: "clamp(1.7rem,3.4vw,2.3rem)", lineHeight: 1.08, letterSpacing: "-0.03em", fontWeight: 660 }}
+            className="mb-5 font-display"
+            style={{ fontSize: "clamp(1.9rem,3.8vw,2.6rem)", lineHeight: 1.05, letterSpacing: "-0.02em", fontWeight: 600 }}
           >
             What do you want done?
           </h1>
-          <div className="card p-4 sm:p-5" style={{ boxShadow: "0 12px 40px -28px rgba(0,0,0,0.25)" }}>
+          <div className="card p-4 sm:p-6">
             <Composer />
           </div>
         </section>
@@ -230,10 +234,12 @@ function FirstRunBanner() {
 function EmptyState() {
   return (
     <div className="card p-10 text-center">
-      <div className="mx-auto mb-4 w-10 h-10 rounded-lg flex items-center justify-center" style={{ background: "var(--color-accent-soft)", color: "var(--color-accent-ink)", fontWeight: 700 }}>
-        V
+      <div className="mx-auto mb-4 w-11 h-11 rounded-xl flex items-center justify-center" style={{ background: "var(--color-accent-soft)", color: "var(--color-accent-ink)" }} aria-hidden>
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+          <path d="M5 12h14M13 6l6 6-6 6" />
+        </svg>
       </div>
-      <h3 className="text-[16px] font-[640] mb-1.5">No objectives yet</h3>
+      <h3 className="text-[17px] font-[640] mb-1.5 font-display">No objectives yet</h3>
       <p className="text-[13.5px] text-[var(--color-muted)] max-w-md mx-auto leading-relaxed">
         Describe an outcome you want completed above — not a question to answer. Volo will create a persistent
         objective, plan the work, research the web, and keep it here so you can track progress and approve actions.

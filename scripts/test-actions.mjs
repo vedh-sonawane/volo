@@ -41,13 +41,15 @@ const providers = loadTs("src/lib/actions/providers.ts", {
   "@/lib/tools/ics": shimIcs,
   "./types": shimTypes,
 });
-const shimConfig = { cfg: (k, f = "") => process.env[k] || f };
+const shimConfig = { cfg: (k, f = "") => process.env[k] || f, secret: () => "" };
 const actions = loadTs("src/lib/actions/index.ts", {
   "@/lib/types": shimTypes,
   "@/lib/providers/email": shimEmail,
   "@/lib/config": shimConfig,
   "./providers": providers,
   "./types": shimTypes,
+  // No Stripe key in these tests → the payment path uses sandbox/unsupported.
+  "./stripe": { StripeTestPaymentAction: class {}, stripeTestConfigured: () => false },
 });
 const { executeAction } = actions;
 
@@ -118,6 +120,34 @@ async function main() {
   check("payment with no integration → unsupported (honest)", r.status === "unsupported", JSON.stringify(r));
   check("unsupported provides safe fallback steps", !!(r.artifact && r.artifact.steps));
   check("unsupported not recorded (retry after config)", !task.executedActions["t:unsup"]);
+
+  // 9. SANDBOX payment with a concrete target → simulated, honest about no money.
+  process.env.ACTION_MODE = "sandbox";
+  task = { executedActions: {} };
+  r = await executeAction(task, { capability: "payment", target: "sandbox://john-concert-tickets", summary: "Pay", payload: { amount: "50", currency: "CAD" }, idempotencyKey: "t:pay", financial: { total: 50, currency: "CAD" } });
+  check("sandbox payment → succeeded AND flagged simulated", r.status === "succeeded" && r.simulated === true, JSON.stringify(r));
+  check("sandbox payment says NO real money moved", /no real money/i.test(r.message), r.message);
+  check("sandbox payment does NOT claim a real transfer", !/\b(transferred|charged your card|real payment)\b/i.test(r.message), r.message);
+  check("sandbox payment preserves the exact target in its record", r.message.includes("sandbox://john-concert-tickets"), r.message);
+
+  // 9b. Email content with an unresolved placeholder is REFUSED (never sent/prepared).
+  process.env.ACTION_MODE = "sandbox";
+  task = { executedActions: {} };
+  r = await executeAction(task, { capability: "send_email", target: "bob@example.org", summary: "", payload: { subject: "receipt", body: "Hi Bob, attached is the payment for [reason/invoice]." }, idempotencyKey: "t:ph1" });
+  check("email with placeholder body → failed (never sent)", r.status === "failed" && /placeholder/i.test(r.message), JSON.stringify(r));
+  check("nothing recorded for a refused placeholder send", !task.executedActions["t:ph1"]);
+  // Clean, verbatim user content is NOT blocked by the guard.
+  task = { executedActions: {} };
+  r = await executeAction(task, { capability: "send_email", target: "bob@example.org", summary: "", payload: { subject: "your receipt", body: "here you go bob. this is your receipt." }, idempotencyKey: "t:clean" });
+  check("clean email content → not blocked by the placeholder guard", !/placeholder/i.test(r.message || ""), JSON.stringify(r));
+
+  // 10. Empty / placeholder payment targets are STILL refused (safety intact).
+  task = { executedActions: {} };
+  r = await executeAction(task, { capability: "payment", target: "", summary: "Pay", payload: {}, idempotencyKey: "t:pe", financial: { total: 50, currency: "CAD" } });
+  check("empty payment target → failed (blocked)", r.status === "failed", JSON.stringify(r));
+  task = { executedActions: {} };
+  r = await executeAction(task, { capability: "payment", target: "[add the payment link]", summary: "Pay", payload: {}, idempotencyKey: "t:pp", financial: { total: 50, currency: "CAD" } });
+  check("placeholder payment target → failed (blocked)", r.status === "failed", JSON.stringify(r));
 
   console.log(`\n${pass} passed, ${fail} failed`);
   if (fail > 0) process.exit(1);

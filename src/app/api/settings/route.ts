@@ -17,7 +17,7 @@ const CONFIG_KEYS = [
   "SMTP_PORT",
   "SMTP_FROM",
 ];
-const SECRET_KEYS = ["SMTP_PASS"];
+const SECRET_KEYS = ["SMTP_PASS", "STRIPE_SECRET_KEY"];
 
 // GET — current settings. Config values are returned; secrets return ONLY a
 // "set" boolean (+ a mask). The raw secret never leaves the server.

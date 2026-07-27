@@ -25,26 +25,37 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   }
   const answers = Array.isArray(body.answers) ? body.answers : [];
 
-  // Attach answers to their questions and build the merged context.
+  // Attach answers to their questions. Direct-action parameter answers are stored
+  // STRUCTURALLY (verbatim, keyed by param) so the exact text reaches the payload;
+  // free-form (goal/research) answers are merged into the effective objective.
   const lines: string[] = [];
+  const paramAnswers: Record<string, string> = { ...(task.directActionParams ?? {}) };
   for (const q of task.clarifications ?? []) {
     const a = answers.find((x) => x.id === q.id);
     const text = (a?.answer || "").trim();
     q.answer = text || "(no answer given)";
-    lines.push(`- ${q.question} → ${q.answer}`);
+    if (q.param) {
+      // VERBATIM — never re-parsed. Only record a real answer (skip "no answer").
+      if (text) paramAnswers[q.param] = text;
+    } else {
+      lines.push(`- ${q.question} → ${q.answer}`);
+    }
   }
-  if (lines.length === 0) {
+  if ((task.clarifications ?? []).length === 0) {
     return NextResponse.json({ error: "Please answer at least one question." }, { status: 400 });
   }
 
-  task.clarificationContext = [task.clarificationContext, ...lines].filter(Boolean).join("\n");
+  if (Object.keys(paramAnswers).length > 0) task.directActionParams = paramAnswers;
+  if (lines.length > 0) {
+    task.clarificationContext = [task.clarificationContext, ...lines].filter(Boolean).join("\n");
+  }
   task.timeline.push({
     id: newId("t_"),
     at: Date.now(),
     status: "awaiting_clarification",
     level: "info",
     message: "Thanks — got your answers. Re-planning with them now.",
-    detail: lines.join(" · ").slice(0, 200),
+    detail: (lines.join(" · ") || `Recorded ${Object.keys(paramAnswers).length} detail(s).`).slice(0, 200),
   });
 
   // Reset to a runnable state; the reopened stream will re-plan + execute.

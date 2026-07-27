@@ -13,6 +13,11 @@ export type { ModelProvider, GenerateOptions } from "./types";
 
 const rule = new RuleModelProvider();
 
+/** The deterministic provider — used when a fast, network-free path is required. */
+export function ruleModel(): ModelProvider {
+  return rule;
+}
+
 function configured(): ModelProvider {
   const choice = cfg("MODEL_PROVIDER", "rule").toLowerCase();
   switch (choice) {

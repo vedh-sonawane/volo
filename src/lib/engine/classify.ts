@@ -158,6 +158,17 @@ export function reconcileCategories(
   return out.slice(0, cap);
 }
 
+/**
+ * Does the objective genuinely call for a MULTI-category decomposition — i.e. it
+ * enumerates independent categories to compare/combine, or explicitly asks to
+ * combine/mix them? Used to reject invented categories: a planner may only split
+ * an objective the user actually phrased as multi-category, never as a fallback
+ * for "I don't know how to answer this". Generic — driven by the user's words.
+ */
+export function hasMultiCategorySignal(objective: string, c: TaskConstraints): boolean {
+  return deterministicDecompose(objective, c) !== null || MULTI_SIGNAL.test(objective);
+}
+
 export interface ObjectiveIntent {
   outcome: OutcomeType;
   /** Human label for one candidate, e.g. "driving instructor", or "option". */

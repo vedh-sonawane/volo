@@ -18,7 +18,7 @@
 
 import type { Comparison, PermissionLevel, ResultItem, Source, StreamEvent, Task, TaskConstraints } from "@/lib/types";
 import { getResearchProvider } from "@/lib/providers/research";
-import type { FetchedPage, SearchResult } from "@/lib/providers/research";
+import type { FetchedPage, SearchResult, SearchStatus } from "@/lib/providers/research";
 import { extractStructured } from "@/lib/engine/extract-structured";
 import { compareResults, parsePrice } from "@/lib/engine/compare";
 import { combineDomains } from "@/lib/engine/combine";
@@ -147,6 +147,23 @@ const reason: ExecutableTool = {
   },
 };
 
+const direct_answer: ExecutableTool = {
+  name: "direct_answer",
+  title: "Compose a direct answer",
+  description: "Answer an informational/creative request directly from knowledge/generation — no web research.",
+  permission: "research",
+  requiresApproval: false,
+  implemented: true,
+  onError: "If no model is connected, Volo says so honestly instead of fabricating an answer.",
+  async run(_input, ctx) {
+    // The actual composition happens in finalize (where the model is available);
+    // this step marks the phase and never touches the web. Its presence GUARANTEES
+    // a direct-answer objective runs zero research tools.
+    ctx.log("info", "Answering directly — no web search, categories, or comparison needed for this request.");
+    return { ok: true, summary: "composing a direct answer", confidence: 0.7 };
+  },
+};
+
 const web_search: ExecutableTool = {
   name: "web_search",
   title: "Search the web",
@@ -159,20 +176,48 @@ const web_search: ExecutableTool = {
     const query = String(input.query || "");
     const research = getResearchProvider();
     ctx.task.researchProvider = research.name;
-    const results = await research.search(query, 8);
+    const resp = await research.search(query, 8);
+    const results = resp.results;
     const prev = getUrls(ctx);
     const merged = dedupeUrls([...prev, ...results]);
     ctx.bb.set(ctx.scopeBbKey("urls"), merged);
-    ctx.log(results.length ? "success" : "warn", `Search "${query}" → ${results.length} result${results.length === 1 ? "" : "s"}`);
+
+    // HONESTY: a provider failure (rate-limit/timeout/error) is NOT the same as a
+    // genuine zero-result search. Report each truthfully so nothing is masked.
+    const failed = resp.status !== "ok" && resp.status !== "empty";
+    if (results.length > 0) {
+      ctx.log("success", `Search "${query}" → ${results.length} result${results.length === 1 ? "" : "s"}`);
+    } else if (failed) {
+      ctx.log("warn", `Search "${query}" could not complete: ${searchStatusMessage(resp.status, resp.error)}`, resp.error);
+    } else {
+      ctx.log("info", `Search "${query}" → 0 results (the provider responded, but nothing matched).`);
+    }
+
     return {
       ok: results.length > 0,
-      summary: `${results.length} results`,
+      summary: results.length ? `${results.length} results` : failed ? `search ${resp.status}` : "0 results",
       confidence: results.length ? 0.7 : 0.2,
-      error: results.length ? undefined : "No results (provider may be rate-limited)",
+      error: results.length ? undefined : searchStatusMessage(resp.status, resp.error),
       output: results.map((r) => r.url),
     };
   },
 };
+
+/** An honest, user-facing message for a non-successful search status. */
+function searchStatusMessage(status: SearchStatus, detail?: string): string {
+  switch (status) {
+    case "empty":
+      return "No results matched this query (the search provider responded normally).";
+    case "rate_limited":
+      return "The free search provider is rate-limiting requests right now — no results this attempt. It usually recovers shortly; try again in a moment.";
+    case "timeout":
+      return `The search request timed out${detail ? ` (${detail})` : ""}. No results were returned.`;
+    case "error":
+      return `The search provider returned an error${detail ? `: ${detail}` : ""}. No results were returned.`;
+    default:
+      return detail || "No results.";
+  }
+}
 
 const fetch_page: ExecutableTool = {
   name: "fetch_page",
@@ -297,6 +342,17 @@ const draft_email: ExecutableTool = {
   implemented: true,
   onError: "Never sends; on failure returns the draft text so nothing is lost.",
   async run(_input, ctx) {
+    // DIRECT ACTION: the user supplied the exact recipient/subject/body. Prepare
+    // that email verbatim — never a researched provider, never a placeholder, and
+    // never rewriting the user's subject/body.
+    const da = ctx.task.directAction;
+    if (da && da.capability === "send_email") {
+      const draft = draftEmail({ to: da.target, subject: da.params.subject ?? "", body: da.params.body ?? "" });
+      ctx.bb.set("draft", draft);
+      ctx.log("success", `Prepared the exact email you specified to ${da.target}`, `Subject: ${da.params.subject ?? "(none)"}`);
+      return { ok: true, summary: `draft ready for ${da.target}`, output: draft };
+    }
+
     const first = topCandidate(ctx.task);
     const c = ctx.task.constraints;
     // For a candidates objective we draft to the top provider; for a procedure
@@ -363,6 +419,7 @@ function declaredAction(
 
 export const KIT: Record<string, ExecutableTool> = {
   reason,
+  direct_answer,
   web_search,
   fetch_page,
   read_document,
@@ -388,6 +445,12 @@ export const KIT: Record<string, ExecutableTool> = {
     "Make the booking",
     "Make a booking or reservation (an external commitment).",
     "Not enabled in the free version — approving gives you the exact booking link and steps."
+  ),
+  payment: declaredAction(
+    "payment",
+    "Make the payment",
+    "Pay a supported payment target (a money transfer).",
+    "Not enabled in the free version — Volo never charges a card without a secure, tokenized integration. Approving gives you the exact steps to pay it yourself. (Set ACTION_MODE=sandbox to exercise the flow in test mode.)"
   ),
   monitor_inbox: declaredAction(
     "monitor_inbox",

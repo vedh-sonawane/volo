@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
 import { Wordmark } from "@/components/Wordmark";
+import { ThemeToggle } from "@/components/ThemeToggle";
 import { CapabilityPanel, useCapabilities } from "./Capabilities";
 
 interface SettingsData {
@@ -15,6 +16,7 @@ export function SettingsView() {
   const [data, setData] = useState<SettingsData | null>(null);
   const [form, setForm] = useState<Record<string, string>>({});
   const [pass, setPass] = useState(""); // new SMTP password (blank = keep existing)
+  const [stripeKey, setStripeKey] = useState(""); // new Stripe TEST key (blank = keep existing)
   const [saved, setSaved] = useState(false);
   const [busy, setBusy] = useState(false);
   const [tests, setTests] = useState<Record<string, TestState>>({});
@@ -40,12 +42,14 @@ export function SettingsView() {
     try {
       const secrets: Record<string, string> = {};
       if (pass) secrets.SMTP_PASS = pass; // only send when changed
+      if (stripeKey) secrets.STRIPE_SECRET_KEY = stripeKey.trim();
       await fetch("/api/settings", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ config: form, secrets }),
       });
       setPass("");
+      setStripeKey("");
       setSaved(true);
       await load();
       await reload(false);
@@ -66,12 +70,19 @@ export function SettingsView() {
   if (!data) return <div className="min-h-screen flex items-center justify-center text-[var(--color-muted)]">Loading settings…</div>;
 
   const smtpSet = data.secrets.SMTP_PASS?.set;
+  const stripeSet = data.secrets.STRIPE_SECRET_KEY?.set;
 
   return (
     <main className="min-h-screen">
-      <header className="max-w-3xl mx-auto px-6 h-16 flex items-center justify-between">
-        <Link href="/" className="flex items-center gap-2"><Wordmark size={18} /></Link>
-        <span className="text-[12.5px] text-[var(--color-faint)]">Settings</span>
+      <header className="sticky top-0 z-20 border-b glass" style={{ borderRadius: 0 }}>
+        <div className="max-w-3xl mx-auto px-6 h-16 flex items-center justify-between">
+          <Link href="/" className="flex items-center gap-2"><Wordmark size={20} /></Link>
+          <div className="flex items-center gap-3">
+            <span className="text-[12.5px] text-[var(--color-faint)]">Settings</span>
+            <span className="w-px h-5" style={{ background: "var(--color-line)" }} />
+            <ThemeToggle />
+          </div>
+        </div>
       </header>
 
       <div className="max-w-3xl mx-auto px-6 pb-24 flex flex-col gap-6">
@@ -127,11 +138,31 @@ export function SettingsView() {
           )}
         </Card>
 
+        {/* Payments — Stripe test mode */}
+        <Card title="Payments (Stripe test mode)" note="Stripe Test Mode is 100% free — the real Stripe API with a test key and test cards. Volo creates a real PaymentIntent with a test card so payments actually work end-to-end, but NO real money ever moves. Only a test key (sk_test_…) is accepted; a live key is refused.">
+          <div>
+            <label className="text-[12.5px] font-[550] text-[var(--color-ink-soft)]">Stripe secret key (test) {stripeSet && <span className="text-[var(--color-ok)]">· saved</span>}</label>
+            <input
+              type="password"
+              className="field !text-[14px] !py-2.5 !rounded-lg mt-1"
+              value={stripeKey}
+              placeholder={stripeSet ? "•••••••• (leave blank to keep)" : "sk_test_…"}
+              onChange={(e) => { setStripeKey(e.target.value); setSaved(false); }}
+            />
+            <p className="text-[11px] text-[var(--color-faint)] mt-1">Stored encrypted on this machine (AES-256). Never shown again, never sent to the browser or AI. Volo never handles raw card data — it uses Stripe’s own test cards.</p>
+          </div>
+          <TestRow label="Test Stripe key (no charge)" state={tests.stripe} onTest={() => test("stripe")} />
+          <div className="text-[12px] p-3 rounded-lg" style={{ background: "color-mix(in srgb, var(--color-ok) 10%, transparent)", color: "var(--color-ok)" }}>
+            Get a free test key at dashboard.stripe.com → Developers → API keys (Test mode). It starts with <span className="font-[var(--font-mono)]">sk_test_</span>. Every payment is still approval-gated and clearly labelled TEST.
+          </div>
+        </Card>
+
         {/* Security note */}
         <Card title="Security & privacy" note="">
           <ul className="text-[12.5px] text-[var(--color-muted)] flex flex-col gap-1.5">
             <li>• Secrets are encrypted at rest on this machine; the AI model and the browser never receive them.</li>
             <li>• Volo never stores card numbers, CVVs, bank passwords, or one-time codes — anywhere.</li>
+            <li>• Payments use Stripe TEST mode only (sk_test_…); a live key is refused so real money can never move.</li>
             <li>• This build is a single-user local app: there is no login yet, so anyone with access to this machine can use it. Multi-user accounts + per-user encrypted secrets are a documented next step, not yet built.</li>
           </ul>
         </Card>

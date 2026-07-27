@@ -5,6 +5,7 @@ import { useCallback, useState } from "react";
 import type { Task } from "@/lib/types";
 import { useTaskStream } from "@/components/useTaskStream";
 import { Wordmark } from "@/components/Wordmark";
+import { ThemeToggle } from "@/components/ThemeToggle";
 import { STATUS_META, nextActionFor } from "@/lib/ui";
 import { Stepper } from "./Stepper";
 import { PlanList } from "./PlanList";
@@ -16,6 +17,7 @@ import { FinalResult } from "./FinalResult";
 import { Approvals } from "./Approvals";
 import { WaitingCard } from "./WaitingCard";
 import { ClarifyCard } from "./ClarifyCard";
+import { ObjectivePanel } from "./ObjectivePanel";
 
 export function Workspace({ taskId }: { taskId: string }) {
   const [reloadToken, setReloadToken] = useState(0);
@@ -31,22 +33,23 @@ export function Workspace({ taskId }: { taskId: string }) {
   return (
     <main className="min-h-screen">
       {/* Top bar */}
-      <header className="sticky top-0 z-10 border-b" style={{ background: "color-mix(in srgb, var(--color-paper) 88%, transparent)", backdropFilter: "blur(8px)" }}>
+      <header className="sticky top-0 z-20 border-b glass" style={{ borderRadius: 0 }}>
         <div className="max-w-6xl mx-auto px-6 h-14 flex items-center justify-between gap-4">
           <Link href="/" className="flex items-center gap-2 shrink-0">
-            <Wordmark size={18} />
+            <Wordmark size={20} />
           </Link>
-          <StatusBadge task={task} live={connected} />
+          <div className="flex items-center gap-3">
+            <StatusBadge task={task} live={connected} />
+            <span className="w-px h-5" style={{ background: "var(--color-line)" }} />
+            <ThemeToggle />
+          </div>
         </div>
       </header>
 
       <div className="max-w-6xl mx-auto px-6 py-8">
-        {/* Objective */}
-        <div className="fade-up">
-          <div className="eyebrow mb-2">Objective</div>
-          <h1 className="text-[22px] sm:text-[26px] font-[640] tracking-[-0.02em] leading-tight" style={{ maxWidth: 780 }}>
-            {task.objective}
-          </h1>
+        {/* Objective (with edit + cancel controls) */}
+        <div>
+          <ObjectivePanel task={task} onEdited={reload} />
           <div className="mt-4">
             <Stepper task={task} />
           </div>
@@ -243,9 +246,9 @@ function CenterMessage({ title, body }: { title: string; body: string }) {
   return (
     <div className="min-h-screen flex items-center justify-center px-6">
       <div className="text-center max-w-md">
-        <h1 className="text-[20px] font-[640] mb-2">{title}</h1>
+        <h1 className="text-[22px] font-[640] mb-2 font-display">{title}</h1>
         <p className="text-[14px] text-[var(--color-muted)] mb-6">{body}</p>
-        <Link href="/" className="btn btn-accent">Start a new objective</Link>
+        <Link href="/" className="btn btn-accent btn-rainbow">Start a new objective</Link>
       </div>
     </div>
   );

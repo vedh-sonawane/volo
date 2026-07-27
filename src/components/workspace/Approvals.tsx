@@ -2,6 +2,16 @@
 
 import { useState } from "react";
 import type { ApprovalRequest, Task } from "@/lib/types";
+import { SparkleIcon } from "./ObjectivePanel";
+
+function RefineSpinner() {
+  return (
+    <span
+      className="spin"
+      style={{ width: 12, height: 12, borderRadius: 999, border: "2px solid rgba(255,210,63,0.35)", borderTopColor: "#ffd23f", display: "inline-block" }}
+    />
+  );
+}
 
 interface Outcome {
   performed: boolean;
@@ -42,37 +52,78 @@ export function Approvals({ task, onDecided }: { task: Task; onDecided?: () => v
       </p>
       <div className="mt-4 flex flex-col gap-3">
         {pending.map((a) => (
-          <ApprovalCard key={a.id} approval={a} taskId={task.id} onDecided={onDecided} />
+          <ApprovalCard key={a.id} approval={a} taskId={task.id} onDecided={onDecided} canRefine={a.tool === "send_email" && task.directAction?.capability === "send_email"} />
         ))}
         {decided.map((a) => (
-          <ApprovalCard key={a.id} approval={a} taskId={task.id} onDecided={onDecided} />
+          <ApprovalCard key={a.id} approval={a} taskId={task.id} onDecided={onDecided} canRefine={false} />
         ))}
       </div>
     </section>
   );
 }
 
-function ApprovalCard({ approval, taskId, onDecided }: { approval: ApprovalRequest; taskId: string; onDecided?: () => void }) {
+function ApprovalCard({ approval, taskId, onDecided, canRefine }: { approval: ApprovalRequest; taskId: string; onDecided?: () => void; canRefine?: boolean }) {
   const [status, setStatus] = useState(approval.status);
   const [busy, setBusy] = useState(false);
+  const [refining, setRefining] = useState(false);
   const [outcome, setOutcome] = useState<Outcome | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  // Polish the pending email's subject + body (recipient never changes).
+  async function refineDraft() {
+    setRefining(true);
+    setError(null);
+    try {
+      const res = await fetch(`/api/tasks/${taskId}/refine-draft`, { method: "POST" });
+      const data = await res.json().catch(() => null);
+      if (res.ok && data?.ok) {
+        onDecided?.(); // re-sync so the polished preview shows
+      } else {
+        setError(data?.error || "Couldn't refine the draft right now.");
+      }
+    } catch {
+      setError("Couldn't reach the server to refine — the draft is unchanged.");
+    } finally {
+      setRefining(false);
+    }
+  }
 
   async function decide(decision: "approved" | "rejected") {
     setBusy(true);
+    setError(null);
     try {
       const res = await fetch(`/api/tasks/${taskId}/approve`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ approvalId: approval.id, decision }),
       });
-      const data = await res.json();
+      // The response may not be JSON if the server errored badly — read defensively.
+      let data: { outcome?: Outcome; error?: string } | null = null;
+      try {
+        data = await res.json();
+      } catch {
+        /* non-JSON error body */
+      }
       if (res.ok) {
         setStatus(decision);
-        setOutcome(data.outcome);
+        setOutcome(data?.outcome ?? null);
         // Let the workspace re-sync — the objective may now be waiting for a
         // reply (Phase 9) or completed.
         setTimeout(() => onDecided?.(), 400);
+      } else if (res.status === 409) {
+        // Already decided elsewhere (e.g. another tab) — re-sync to show truth
+        // rather than leaving a stale pending card.
+        setTimeout(() => onDecided?.(), 100);
+        setError(data?.error || "This action was already decided. Refreshing…");
+      } else {
+        // Server responded with an error — keep the approval PENDING so the user
+        // can retry, and show an honest message (nothing was executed).
+        setError(data?.error || `The server couldn't process this (HTTP ${res.status}). The approval is still pending — please try again.`);
       }
+    } catch {
+      // Network failure / server unreachable — the request never completed, so the
+      // approval is unchanged and still pending. Never crash the UI; report honestly.
+      setError("Couldn't reach the server, so nothing was changed. Your approval is still pending — check your connection and try again.");
     } finally {
       setBusy(false);
     }
@@ -120,13 +171,33 @@ function ApprovalCard({ approval, taskId, onDecided }: { approval: ApprovalReque
       )}
 
       {status === "pending" ? (
-        <div className="mt-4 flex items-center gap-2">
-          <button className="btn btn-accent text-[13px] !py-2" disabled={busy} onClick={() => decide("approved")}>
-            {busy ? "Working…" : approval.financial ? `Confirm & pay ${approval.financial.currency} ${approval.financial.total}` : "Approve"}
-          </button>
-          <button className="btn btn-ghost text-[13px] !py-2" disabled={busy} onClick={() => decide("rejected")}>
-            Decline
-          </button>
+        <div className="mt-4">
+          <div className="flex items-center gap-2 flex-wrap">
+            <button className="btn btn-accent btn-rainbow text-[13px] !py-2" disabled={busy || refining} onClick={() => decide("approved")}>
+              {busy ? "Working…" : approval.financial ? `Confirm & pay ${approval.financial.currency} ${approval.financial.total}` : "Approve"}
+            </button>
+            <button className="btn btn-ghost text-[13px] !py-2" disabled={busy || refining} onClick={() => decide("rejected")}>
+              Decline
+            </button>
+            {canRefine && (
+              <button
+                className="btn btn-magic text-[13px] !py-2 gap-1.5 ml-auto"
+                disabled={busy || refining}
+                onClick={refineDraft}
+                title="Polish the subject + body (your recipient never changes)"
+                aria-label="Refine email draft"
+              >
+                <span className="star">{refining ? <RefineSpinner /> : <SparkleIcon />}</span>
+                {refining ? "Polishing…" : "Refine draft"}
+              </button>
+            )}
+          </div>
+          {error && (
+            <div className="mt-2.5 text-[12.5px] leading-relaxed flex items-start gap-1.5" style={{ color: "var(--color-err)" }} role="alert">
+              <span>⚠</span>
+              <span>{error}</span>
+            </div>
+          )}
         </div>
       ) : null}
 

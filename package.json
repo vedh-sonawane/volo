@@ -8,7 +8,7 @@
     "build": "next build",
     "start": "next start",
     "lint": "next lint",
-    "test": "node scripts/test-actions.mjs && node scripts/test-engine.mjs",
+    "test": "node scripts/test-actions.mjs && node scripts/test-engine.mjs && node scripts/test-routing.mjs && node scripts/test-research.mjs && node scripts/test-decision.mjs && node scripts/test-runcontrol.mjs && node scripts/test-paths.mjs && node scripts/test-stripe.mjs",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {

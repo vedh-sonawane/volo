@@ -4,10 +4,10 @@ import { useRouter } from "next/navigation";
 import { useState } from "react";
 
 const EXAMPLES = [
+  "Make someone laugh with a funny joke.",
   "Find me the best driving instructor near me under $60/hour with availability next week.",
-  "Find three restaurants for 6 people this Saturday under $50 per person.",
+  "Explain how airplanes stay in the air.",
   "Compare these laptops for programming and gaming under $1,500.",
-  "Find out how to return this product and tell me exactly what I need to do.",
   "Find the cheapest flight options that match these requirements.",
 ];
 
@@ -71,7 +71,7 @@ export function Composer() {
           <kbd className="text-[11px] text-[var(--color-faint)] font-[var(--font-mono)] hidden sm:inline">
             ⌘/Ctrl + ↵
           </kbd>
-          <button className="btn btn-accent" onClick={submit} disabled={busy}>
+          <button className="btn btn-accent btn-rainbow" onClick={submit} disabled={busy}>
             {busy ? (
               <>
                 <Spinner /> Creating…

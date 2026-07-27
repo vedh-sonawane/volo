@@ -1,25 +1,8 @@
-export function Wordmark({ size = 20 }: { size?: number }) {
+export function Wordmark({ size = 22 }: { size?: number }) {
+  // Text-only wordmark (no icon). A display serif with a single accent full-stop.
   return (
-    <span className="inline-flex items-center gap-2 select-none" style={{ fontSize: size }}>
-      <span
-        aria-hidden
-        style={{
-          width: size * 0.9,
-          height: size * 0.9,
-          borderRadius: 6,
-          background: "var(--color-ink)",
-          display: "inline-flex",
-          alignItems: "center",
-          justifyContent: "center",
-          color: "#fff",
-          fontWeight: 700,
-          fontSize: size * 0.56,
-          lineHeight: 1,
-        }}
-      >
-        V
-      </span>
-      <span style={{ fontWeight: 650, letterSpacing: "-0.02em" }}>volo</span>
+    <span className="wordmark select-none" style={{ fontSize: size }} aria-label="Volo">
+      volo<span className="dot-accent">.</span>
     </span>
   );
 }

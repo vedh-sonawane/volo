@@ -4,8 +4,11 @@
 import type { StreamEvent, Task } from "@/lib/types";
 import { getTask, saveTask } from "@/lib/store";
 import { runTask } from "./executor";
+import { bumpGeneration, isSuperseded } from "./runcontrol";
 
-const running = new Set<string>();
+// taskId → the generation currently executing (so a reconnect just observes
+// instead of starting a second run).
+const running = new Map<string, number>();
 
 /** States that will NOT trigger a fresh run when the stream is (re)opened. */
 function isTerminal(t: Task): boolean {
@@ -30,18 +33,32 @@ export async function ensureRun(taskId: string, emit: (e: StreamEvent) => void):
     emit({ type: "error", message: "Task not found" });
     return;
   }
-  if (isTerminal(task) || running.has(taskId)) {
+  if (running.has(taskId) || isTerminal(task)) {
     // Replay current snapshot; nothing to execute.
     emit({ type: "task", task });
     emit({ type: "done", task });
     return;
   }
-  running.add(taskId);
+  const myGen = bumpGeneration(taskId); // this run's generation
+  running.set(taskId, myGen);
   try {
     emit({ type: "task", task });
-    await runTask(task, emit);
-    saveTask(task);
+    await runTask(task, emit, myGen);
+    // Never persist a run that was superseded (cancelled / prompt edited).
+    if (!isSuperseded(taskId, myGen)) saveTask(task);
   } finally {
-    running.delete(taskId);
+    // Only clear the slot if we still own it (a superseding run may have taken it).
+    if (running.get(taskId) === myGen) running.delete(taskId);
   }
+}
+
+/**
+ * Supersede any in-flight run for a task: bump the generation (so the running
+ * executor stops and stops persisting) and free the run slot so a subsequent
+ * stream-open starts a fresh run. Used by cancel (then delete) and edit (then
+ * reset + re-run).
+ */
+export function supersedeRun(taskId: string): void {
+  bumpGeneration(taskId);
+  running.delete(taskId);
 }
