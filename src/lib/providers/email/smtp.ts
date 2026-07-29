@@ -79,7 +79,7 @@ export class SmtpEmailProvider implements EmailProvider {
     // newline can never make the server reject the message (or enable injection).
     const subject = String(msg.subject ?? "").replace(/[\r\n]+/g, " ").trim();
     try {
-      const info = await this.tx().sendMail({ from, to: msg.to, subject, text: msg.body });
+      const info = await this.tx().sendMail({ from, to: msg.to, subject, text: msg.body, ...(msg.html ? { html: msg.html } : {}) });
       return { sent: true, id: info.messageId, message: `Sent to ${msg.to} via your configured SMTP account.` };
     } catch (e) {
       const reason = e instanceof Error ? e.message : "send failed";

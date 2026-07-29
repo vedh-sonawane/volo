@@ -9,8 +9,25 @@
 import type { CapabilityStatus } from "@/lib/types";
 import { cfg } from "@/lib/config";
 import { getEmailProvider } from "@/lib/providers/email";
+import { currentUserId } from "@/lib/auth/context";
+import { getIntegrationMeta } from "@/lib/auth/integrations";
 
-export function capabilitySnapshot(): CapabilityStatus[] {
+function has(provider: string, scopeIncludes: string): boolean {
+  try {
+    const m = getIntegrationMeta(currentUserId(), provider);
+    return !!m && m.scopes.some((s) => s.includes(scopeIncludes));
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * A snapshot of what Volo can do right now. `modelGenerative` (from the resolved
+ * model) determines the MODEL-BACKED capabilities honestly: a connected generative
+ * model can answer directly / write / clarify; without one, Volo won't fabricate.
+ * Passing `undefined` leaves those available (callers without model info).
+ */
+export function capabilitySnapshot(modelGenerative?: boolean): CapabilityStatus[] {
   let emailReal = false;
   try {
     emailReal = getEmailProvider().name === "smtp";
@@ -19,17 +36,35 @@ export function capabilitySnapshot(): CapabilityStatus[] {
   }
   const sandbox = cfg("ACTION_MODE", "").toLowerCase() === "sandbox";
 
+  // Connected integrations upgrade the real capability state the planner sees.
+  const gmail = has("google", "gmail.send");
+  const gCal = has("google", "calendar");
+
+  const communicateDetail = gmail
+    ? "Gmail connected — sends real email from your Google account (with your approval)"
+    : emailReal
+      ? "email connected via SMTP — can send with your approval"
+      : "no email account connected — will prepare a ready-to-send draft for you to send";
+
+  const scheduleDetail = gCal
+    ? "Google Calendar connected — creates the event directly via the Calendar API (with your approval)"
+    : "exports a standards-compliant .ics calendar file (connect Google Calendar in Settings for direct events)";
+
+  // A connected generative model can compose answers/drafts/summaries. When there
+  // is no model, that capability is honestly unavailable (Volo won't fabricate).
+  const canGenerate = modelGenerative !== false;
+
   return [
-    { id: "answer", available: true, detail: "answered directly from knowledge/generation (a model produces the prose; nothing is fabricated)" },
-    { id: "research", available: true, detail: "free web search + page reading (may rate-limit; degrades honestly)" },
     {
-      id: "communicate",
-      available: true,
-      detail: emailReal
-        ? "email connected — can send to a discovered/supplied address with your approval"
-        : "no email account connected — will prepare a ready-to-send draft for you to send",
+      id: "answer",
+      available: canGenerate,
+      detail: canGenerate
+        ? "a connected AI model answers directly — explanations, drafts, summaries, creative writing (nothing is fabricated)"
+        : "no AI model connected — connect one (e.g. Ollama) to answer directly; Volo never fabricates an answer",
     },
-    { id: "schedule", available: true, detail: "exports a standards-compliant .ics calendar file" },
+    { id: "research", available: true, detail: "free web search + page reading (may rate-limit; degrades honestly)" },
+    { id: "communicate", available: true, detail: communicateDetail },
+    { id: "schedule", available: true, detail: scheduleDetail },
     {
       id: "submit",
       available: sandbox,

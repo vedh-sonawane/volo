@@ -11,6 +11,8 @@ import { getEmailProvider } from "@/lib/providers/email";
 import { cfg } from "@/lib/config";
 import { IcsCalendarAction, LocalDraftEmailAction, SandboxAction, SmtpEmailAction, UnsupportedAction } from "./providers";
 import { StripeTestPaymentAction, stripeTestConfigured } from "./stripe";
+import { GmailSendAction, gmailConfigured } from "./gmail";
+import { GoogleCalendarAction, googleCalendarConfigured } from "./google-calendar";
 
 export type { ActionInput, ActionProvider } from "./types";
 
@@ -34,10 +36,16 @@ function firstPlaceholder(values: unknown[]): string | null {
 export function resolveActionProvider(capability: ActionInput["capability"]): ActionProvider {
   switch (capability) {
     case "send_email":
+      // Prefer a connected Gmail integration (real send via the user's account),
+      // then the user's own SMTP, then sandbox, then an honest draft.
+      if (gmailConfigured()) return new GmailSendAction();
       if (getEmailProvider().name === "smtp") return new SmtpEmailAction();
       if (sandboxMode()) return new SandboxAction("send_email");
       return new LocalDraftEmailAction();
     case "calendar_event":
+      // Prefer a connected Google Calendar (real event creation via the API); else
+      // honestly fall back to a prepared .ics export (nothing is "created").
+      if (googleCalendarConfigured()) return new GoogleCalendarAction();
       return new IcsCalendarAction();
     case "book":
       return sandboxMode()

@@ -20,6 +20,7 @@ import Database from "better-sqlite3";
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
+import { currentUserId, DEFAULT_USER } from "@/lib/auth/context";
 
 const DB_PATH = process.env.VOLO_DB_PATH || "./.data/volo.db";
 
@@ -30,10 +31,20 @@ function db(): Database.Database {
   fs.mkdirSync(path.dirname(abs), { recursive: true });
   _db = new Database(abs);
   _db.pragma("journal_mode = WAL");
+  // Per-user key/value tables (composite PK). Legacy global tables (if present)
+  // are migrated once into the local user's scope, idempotently.
   _db.exec(`
+    CREATE TABLE IF NOT EXISTS config_kv (user_id TEXT NOT NULL, key TEXT NOT NULL, value TEXT NOT NULL, updated_at INTEGER NOT NULL, PRIMARY KEY (user_id, key));
+    CREATE TABLE IF NOT EXISTS secret_kv (user_id TEXT NOT NULL, key TEXT NOT NULL, value TEXT NOT NULL, updated_at INTEGER NOT NULL, PRIMARY KEY (user_id, key));
     CREATE TABLE IF NOT EXISTS app_config (key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at INTEGER NOT NULL);
     CREATE TABLE IF NOT EXISTS app_secrets (key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at INTEGER NOT NULL);
   `);
+  try {
+    _db.exec(`INSERT OR IGNORE INTO config_kv (user_id,key,value,updated_at) SELECT 'local', key, value, updated_at FROM app_config`);
+    _db.exec(`INSERT OR IGNORE INTO secret_kv (user_id,key,value,updated_at) SELECT 'local', key, value, updated_at FROM app_secrets`);
+  } catch {
+    /* legacy tables absent on a fresh DB — nothing to migrate */
+  }
   return _db;
 }
 
@@ -74,35 +85,47 @@ function decrypt(blob: string): string | null {
   }
 }
 
-// ── config (non-sensitive) ───────────────────────────────────────────────────
+/** AES-256-GCM encrypt/decrypt with the local key (for OAuth tokens, etc.). */
+export function encryptValue(plain: string): string {
+  return encrypt(plain);
+}
+export function decryptValue(blob: string): string | null {
+  return decrypt(blob);
+}
+
+// ── config (non-sensitive), scoped to the current user ───────────────────────
 export function getConfig(key: string): string | undefined {
-  const row = db().prepare("SELECT value FROM app_config WHERE key = ?").get(key) as { value: string } | undefined;
+  const row = db().prepare("SELECT value FROM config_kv WHERE user_id = ? AND key = ?").get(currentUserId(), key) as { value: string } | undefined;
   return row?.value;
 }
 export function setConfig(key: string, value: string): void {
-  db().prepare("INSERT INTO app_config (key,value,updated_at) VALUES (?,?,?) ON CONFLICT(key) DO UPDATE SET value=?, updated_at=?").run(key, value, Date.now(), value, Date.now());
+  const uid = currentUserId();
+  const now = Date.now();
+  db().prepare("INSERT INTO config_kv (user_id,key,value,updated_at) VALUES (?,?,?,?) ON CONFLICT(user_id,key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at").run(uid, key, value, now);
 }
 export function allConfig(): Record<string, string> {
-  const rows = db().prepare("SELECT key, value FROM app_config").all() as { key: string; value: string }[];
+  const rows = db().prepare("SELECT key, value FROM config_kv WHERE user_id = ?").all(currentUserId()) as { key: string; value: string }[];
   return Object.fromEntries(rows.map((r) => [r.key, r.value]));
 }
 
-// ── secrets (sensitive, encrypted, server-only) ──────────────────────────────
+// ── secrets (sensitive, encrypted, server-only), scoped to the current user ──
 export function setSecret(key: string, value: string): void {
+  const uid = currentUserId();
   if (!value) {
-    db().prepare("DELETE FROM app_secrets WHERE key = ?").run(key);
+    db().prepare("DELETE FROM secret_kv WHERE user_id = ? AND key = ?").run(uid, key);
     return;
   }
-  db().prepare("INSERT INTO app_secrets (key,value,updated_at) VALUES (?,?,?) ON CONFLICT(key) DO UPDATE SET value=?, updated_at=?").run(key, encrypt(value), Date.now(), encrypt(value), Date.now());
+  const now = Date.now();
+  db().prepare("INSERT INTO secret_kv (user_id,key,value,updated_at) VALUES (?,?,?,?) ON CONFLICT(user_id,key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at").run(uid, key, encrypt(value), now);
 }
 /** Server-only: the decrypted secret. NEVER return this to the client. */
 export function getSecret(key: string): string | undefined {
-  const row = db().prepare("SELECT value FROM app_secrets WHERE key = ?").get(key) as { value: string } | undefined;
+  const row = db().prepare("SELECT value FROM secret_kv WHERE user_id = ? AND key = ?").get(currentUserId(), key) as { value: string } | undefined;
   if (!row) return undefined;
   return decrypt(row.value) ?? undefined;
 }
 export function hasSecret(key: string): boolean {
-  return !!db().prepare("SELECT 1 FROM app_secrets WHERE key = ?").get(key);
+  return !!db().prepare("SELECT 1 FROM secret_kv WHERE user_id = ? AND key = ?").get(currentUserId(), key);
 }
 
 // ── effective config: store → env → default ──────────────────────────────────
@@ -113,14 +136,21 @@ export function cfg(key: string, fallback = ""): string {
   return env != null && env !== "" ? env : fallback;
 }
 
-/** Effective secret: config-store secret → env var (for .env users). */
+/**
+ * Effective secret: the user's stored secret → env var. The env-var fallback is
+ * allowed ONLY for the local/default scope (a single-user .env setup). Real
+ * authenticated users must configure their own secrets — they can never inherit
+ * the host's environment secrets.
+ */
 export function secret(key: string): string {
   const s = getSecret(key);
   if (s) return s;
-  return process.env[key] || "";
+  if (currentUserId() === DEFAULT_USER) return process.env[key] || "";
+  return "";
 }
 
-/** Is a secret configured via EITHER the store or an env var? */
+/** Is a secret configured for the current user (store, or local env fallback)? */
 export function secretConfigured(key: string): boolean {
-  return hasSecret(key) || !!process.env[key];
+  if (hasSecret(key)) return true;
+  return currentUserId() === DEFAULT_USER && !!process.env[key];
 }

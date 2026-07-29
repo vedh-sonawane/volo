@@ -80,10 +80,15 @@ export class IcsCalendarAction implements ActionProvider {
       { title: String(input.payload.title || input.summary).slice(0, 80), location: input.payload.location ? String(input.payload.location) : undefined, description: input.summary, durationMinutes: 60 },
       new Date()
     );
+    // mode:"export" — NOTHING was created in any calendar. The event was only
+    // PREPARED as a downloadable file. The UI renders this as "prepared", never
+    // "created/added/scheduled" (that would be dishonest with no calendar API).
     return {
       status: "succeeded",
-      message: "Exported a calendar file (.ics) — download and import it yourself. This is a file export, NOT an event created in a calendar service (Google/Outlook).",
-      confirmation: "ics-exported",
+      mode: "export",
+      message:
+        "Volo prepared this calendar event. Your current setup only supports .ics export, so nothing was added to a calendar — download the file and import it into Google Calendar or another calendar app. (Connect Google Calendar in Settings to have Volo create the event directly.)",
+      confirmation: "ics-prepared",
       artifact: { ics, filename: "volo-event.ics" },
       at: now(),
     };

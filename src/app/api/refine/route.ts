@@ -1,13 +1,16 @@
 import { NextRequest, NextResponse } from "next/server";
 import { resolveModel } from "@/lib/providers/model";
 import { refineObjective } from "@/lib/engine/refine";
+import { withAuth } from "@/lib/auth/guard";
 
 export const runtime = "nodejs";
+
+export const POST = withAuth(postImpl);
 
 // POST /api/refine { objective } — return a clearer rewrite of the user's prompt.
 // Stateless: the client shows the result for review before applying it. Refining
 // needs a connected model; without one, Volo says so honestly (never fabricates).
-export async function POST(req: NextRequest) {
+async function postImpl(req: NextRequest) {
   let body: { objective?: string };
   try {
     body = await req.json();

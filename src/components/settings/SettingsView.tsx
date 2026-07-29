@@ -5,6 +5,7 @@ import { useCallback, useEffect, useState } from "react";
 import { Wordmark } from "@/components/Wordmark";
 import { ThemeToggle } from "@/components/ThemeToggle";
 import { CapabilityPanel, useCapabilities } from "./Capabilities";
+import { IntegrationsPanel } from "./IntegrationsPanel";
 
 interface SettingsData {
   config: Record<string, string>;
@@ -92,6 +93,8 @@ export function SettingsView() {
         </div>
 
         <CapabilityPanel caps={caps} checking={checking} onRecheck={() => reload(true)} />
+
+        <IntegrationsPanel />
 
         {/* AI / model */}
         <Card title="AI planning" note="Optional. Without it, Volo uses a fast deterministic engine (no AI). Connect Ollama for dynamic planning + clarifying questions.">

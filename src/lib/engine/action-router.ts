@@ -150,15 +150,31 @@ function extractBody(o: string): string {
   return u ? u[1].trim() : "";
 }
 
+// A scheduling verb (many forms/tenses) — generic, never a specific phrase.
+const SCHED_VERB = /\b(add(?:ing)?|creat(?:e|ing)|schedul(?:e|ing)|set(?:ting)?\s?up|mak(?:e|ing)|put(?:ting)?|new|book(?:ing)?|mark(?:ing)?|block(?:ing)?|remind|reminder|log(?:ging)?|note|jot|pencil(?:ing|ed)?|sav(?:e|ing)|set\s+aside|reserv(?:e|ing))\b/i;
+// Verbs that, paired with a concrete time and NO external target, imply a calendar
+// block even without the word "calendar" ("schedule coding tomorrow", "block friday").
+const STRONG_TIME_VERB = /\b(schedul(?:e|ing)|block(?:ing)?|reserv(?:e|ing)|pencil(?:ing|ed)?|set\s+aside|mark(?:ing)?)\b/i;
+// Calendar/event nouns (tolerant of common misspellings as defense-in-depth; the
+// normalizer already canonicalizes these before routing).
+const CAL_NOUN = /\b(calend[ae]r|calandar|calendr|event|meeting|appointment|reminder|invite)\b/i;
+
 function detectCalendar(o: string): DirectAction | null {
+  const date = extractDate(o);
+  const time = extractTime(o);
+  const hasExternalTarget = URL_1.test(o) || EMAIL_1.test(o);
+  // Intent, in priority order:
+  //  1) a scheduling verb + a calendar/event noun ("add coding to my calendar")
+  //  2) any "calendar" mention qualified by a verb, a date, or an event noun
+  //  3) a strong time-blocking verb + a concrete time, no external target
+  //     ("schedule coding tomorrow", "block friday afternoon for coding")
   const intent =
-    /\b(add|create|schedule|set\s?up|make|put|new|book)\b[^.]*\b(calendar|event|meeting|appointment|reminder|invite)\b/i.test(o) ||
-    (/\bcalendar\b/i.test(o) && /\b(event|meeting|appointment|reminder)\b/i.test(o));
+    (SCHED_VERB.test(o) && CAL_NOUN.test(o)) ||
+    (/\bcalend[ae]r\b/i.test(o) && (SCHED_VERB.test(o) || !!date || /\b(event|meeting|appointment|reminder|invite)\b/i.test(o))) ||
+    (STRONG_TIME_VERB.test(o) && (!!date || !!time) && !hasExternalTarget);
   if (!intent) return null;
 
   const title = extractEventTitle(o);
-  const date = extractDate(o);
-  const time = extractTime(o);
   const location = extractEventLocation(o);
 
   const params: Record<string, string> = {};
@@ -179,6 +195,20 @@ function extractEventTitle(o: string): string {
   if (q) return q[1].trim();
   const quoted = o.match(/["'“”](.+?)["'“”]/);
   if (quoted) return quoted[1].trim();
+  // "block/put/mark X in my calendar" — the activity sits between verb and calendar.
+  // Skip when the captured span is just a date ("mark tomorrow in my calendar …"),
+  // so a later clause ("as coding") supplies the real title.
+  const between = o.match(/\b(?:mark|add|put|block|log|note|schedule|save|create|set\s?up)\s+(.+?)\s+(?:in|on|to)\s+(?:my\s+|the\s+)?calendar\b/i);
+  if (between && between[1] && !extractDate(between[1]) && !/^(?:a|an|the|it|this|that|something)$/i.test(between[1].trim())) return between[1].trim();
+  // "… as CODING" — the label after "as" at the tail (skip when it's a date).
+  const asLabel = o.match(/\bas\s+["'“”]?(.+?)["'“”]?\s*$/i);
+  if (asLabel && asLabel[1] && !extractDate(asLabel[1])) return asLabel[1].trim();
+  // "block/reserve tomorrow [afternoon] for coding" — the activity after "for" at the tail.
+  const forLabel = o.match(/\bfor\s+([a-z][a-z0-9 '&/-]{0,50}?)\s*$/i);
+  if (forLabel && forLabel[1] && !extractDate(forLabel[1]) && !/^(?:it|me|us|them|now|later|today|tomorrow|tonight)$/i.test(forLabel[1].trim())) return forLabel[1].trim();
+  // "schedule coding tomorrow" — activity between the verb and a time reference.
+  const verbActivity = o.match(/\b(?:schedule|scheduling|block|blocking|reserve|reserving|pencil|add|adding|put|mark|marking|log|note|save)\s+(?:some\s+|a\s+|an\s+|the\s+)?([a-z][a-z0-9 '&/-]{0,40}?)\s+(?:for\b|on\b|at\b|from\b|this\b|next\b|tomorrow\b|today\b|tonight\b|\d)/i);
+  if (verbActivity && verbActivity[1] && !extractDate(verbActivity[1]) && !/^(?:it|me|us|them|a|an|the|some|time|aside)$/i.test(verbActivity[1].trim())) return verbActivity[1].trim();
   const ev = o.match(/\b(?:event|meeting|appointment|reminder|call)\s+(?:with|for|about)\s+(.+?)(?=\s+(?:on|at|from)\b|[.\n]|$)/i);
   if (ev) return ev[1].trim();
   return "";

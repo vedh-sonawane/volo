@@ -225,9 +225,11 @@ export type ActionCapability = "send_email" | "calendar_event" | "book" | "submi
  *   research       — acquire/compare real entities, or facts that need external/current data
  *   direct_action  — a concrete, executable action with a supplied target
  *   mixed          — research first, THEN an action on the chosen result
+ *   external_data  — retrieve the user's REAL data from a connected integration's API
+ *                    (e.g. GitHub repos) — never answered from the model's memory
  *   informational  — (legacy) synthesize an answer from sources
  */
-export type ObjectiveRoute = "direct_answer" | "research" | "direct_action" | "mixed" | "informational";
+export type ObjectiveRoute = "direct_answer" | "research" | "direct_action" | "mixed" | "external_data" | "informational";
 
 /**
  * A recognised direct executable action: the user supplied a concrete target and
@@ -330,9 +332,12 @@ export interface ActionResult {
    * How it ran, for precise honesty:
    *   "sandbox" — Volo's built-in test double (no external call)
    *   "test"    — a REAL connected provider in TEST mode (real API call, no real money)
-   *   "live"    — a real provider with real consequences (real money/booking)
+   *   "live"    — a real provider with real consequences (real money/booking/event created)
+   *   "export"  — NOTHING external happened; Volo only PREPARED a local artifact (e.g. an
+   *               .ics file / .eml draft) for the user to import/send themselves. The UI
+   *               must never say created/sent/scheduled for an export — only "prepared".
    */
-  mode?: "sandbox" | "test" | "live";
+  mode?: "sandbox" | "test" | "live" | "export";
   at: number;
 }
 
@@ -403,8 +408,10 @@ export interface Task {
   planRationale?: string;
   /** The general goal model (understanding, hard/soft, missing info). */
   goal?: GoalModel;
-  /** How the objective was routed (research / direct_action / mixed / informational). */
+  /** How the objective was routed (research / direct_action / mixed / external_data / …). */
   route?: ObjectiveRoute;
+  /** Set when route === "external_data": which registered data-read to fetch. */
+  dataReadId?: string;
   /** Set when the objective is a recognised direct executable action. */
   directAction?: DirectAction;
   /** The relevant capability paths considered (for explainability + fallback). */

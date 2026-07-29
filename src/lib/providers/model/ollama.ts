@@ -9,6 +9,7 @@ import { cfg } from "@/lib/config";
 
 export class OllamaModelProvider implements ModelProvider {
   readonly name = "ollama";
+  readonly generative = true; // a real LLM — powers planning, answers, writing, etc.
   private static warned = false;
   private baseUrl: string;
   private model: string;

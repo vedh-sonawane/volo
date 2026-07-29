@@ -21,8 +21,25 @@ export interface GenerateOptions {
   timeoutMs?: number;
 }
 
+/**
+ * The distinct things a model provider can do. A GENERATIVE model (Ollama, or any
+ * future LLM) supports ALL of these; a deterministic rule provider supports none
+ * of the free-text ones. Capability detection derives from this single source of
+ * truth — never from provider-specific special-casing — so a connected model
+ * always exposes every capability it can genuinely perform.
+ */
+export type ModelCapability = "planning" | "clarification" | "direct_answer" | "generation";
+
+export const GENERATIVE_CAPABILITIES: ModelCapability[] = ["planning", "clarification", "direct_answer", "generation"];
+
 export interface ModelProvider {
   readonly name: string;
+  /**
+   * True when this provider can compose original free-form text (answers, drafts,
+   * summaries, plans in prose). A deterministic rule provider is NOT generative.
+   * This is what makes direct_answer / writing / clarification available.
+   */
+  readonly generative: boolean;
   /** Whether the provider can actually run right now (e.g. Ollama reachable). */
   available(): Promise<boolean>;
   /**
@@ -30,4 +47,9 @@ export interface ModelProvider {
    * cannot answer — callers MUST handle null with a deterministic fallback.
    */
   generate(prompt: string, opts?: GenerateOptions): Promise<string | null>;
+}
+
+/** The capabilities a provider can genuinely perform (generic, not provider-specific). */
+export function modelCapabilities(m: Pick<ModelProvider, "generative">): ModelCapability[] {
+  return m.generative ? [...GENERATIVE_CAPABILITIES] : [];
 }

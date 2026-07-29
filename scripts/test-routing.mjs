@@ -55,8 +55,12 @@ const planner = loadTs("src/lib/engine/planner.ts", {
   "./action-router": router,
   "./paths": pathsMod,
 });
+const normalize = loadTs("src/lib/engine/normalize.ts");
 // Route an objective the way the engine does: parse constraints, then decide.
 const routeReal = (objective) => routeObjective(objective, understand(objective));
+// Route the way the ENGINE actually does end-to-end: normalize shorthand/typos first
+// (this is what effectiveObjective() applies), then classify + route.
+const routeNorm = (objective) => routeReal(normalize.normalizeObjective(objective));
 
 // ── action execution pipeline (real orchestration, controllable email) ────────
 let emailMode = "smtp";
@@ -90,6 +94,8 @@ const actions = loadTs("src/lib/actions/index.ts", {
   "./providers": providers,
   "./types": {},
   "./stripe": { StripeTestPaymentAction: class {}, stripeTestConfigured: () => false },
+  "./gmail": { GmailSendAction: class {}, gmailConfigured: () => false },
+  "./google-calendar": { GoogleCalendarAction: class {}, googleCalendarConfigured: () => false },
 });
 const { executeAction } = actions;
 
@@ -142,6 +148,50 @@ async function main() {
   // (6) Calendar missing a required param (no date).
   const d6 = routeObjective("Create a calendar event titled Standup.", { outcome: "answer" });
   check("calendar missing date detected", (d6.action?.requiredMissing ?? []).includes("date"));
+
+  // (6b) REGRESSION: "mark in my calendar …" must be a calendar ACTION, never a
+  //      direct answer the model fabricates ("Here is your updated calendar reminder").
+  const d6b = routeReal("mark in my calendar for tomorrow as CODING");
+  check("'mark in my calendar …' → direct_action calendar (not a model answer)", d6b.route === "direct_action" && d6b.action?.capability === "calendar_event", JSON.stringify(d6b));
+  check("activity title extracted from 'as CODING'", d6b.action?.params.title === "CODING", JSON.stringify(d6b.action?.params));
+  check("relative date 'tomorrow' captured", (d6b.action?.params.date || "").toLowerCase() === "tomorrow", JSON.stringify(d6b.action?.params));
+  const d6c = routeReal("block gym in my calendar on friday");
+  check("'block X in my calendar' → calendar action", d6c.route === "direct_action" && d6c.action?.capability === "calendar_event");
+  check("title 'gym' extracted from 'block gym in my calendar'", d6c.action?.params.title === "gym", JSON.stringify(d6c.action?.params));
+
+  // (6d) ROOT-CAUSE REGRESSION: robust, typo-tolerant calendar detection that ALWAYS
+  //      beats research/direct-answer routing. The reported bug ("mark tmrw in my
+  //      calender as coding" → web search) must never return.
+  console.log("Calendar routing — robust NL + always wins over research (regression):");
+  check("normalize fixes shorthand + misspelling", normalize.normalizeObjective("mark tmrw in my calender as coding") === "mark tomorrow in my calendar as coding");
+  check("normalize preserves quoted verbatim content", normalize.normalizeObjective('email bob "see u tmrw"').includes('"see u tmrw"'));
+  const CAL_PHRASES = [
+    ["mark tomorrow in my calendar as coding", "coding"],
+    ["mark tmrw in my calender as coding", "coding"],
+    ["MARK TMRW In My Calender as Coding", "Coding"],
+    ["add coding to my calendar tomorrow", "coding"],
+    ["put coding on my calendar", "coding"],
+    ["schedule coding tomorrow", "coding"],
+    ["create a calendar event tomorrow", null],
+    ["block tomorrow afternoon for coding", "coding"],
+    ["reserve tomorrow for coding", "coding"],
+    ["remind me by creating a calendar event", null],
+  ];
+  for (const [phrase, title] of CAL_PHRASES) {
+    const d = routeNorm(phrase);
+    check(`"${phrase}" → calendar action, never research/answer`, d.route === "direct_action" && d.action?.capability === "calendar_event", JSON.stringify(d));
+    if (title != null) check(`   title = "${title}"`, d.action?.params.title === title, JSON.stringify(d.action?.params));
+  }
+  // Proof it doesn't over-fire: a genuine research objective stays research.
+  const rCafe = routeNorm("find the best cafes near me for tomorrow");
+  check("a real research objective is NOT hijacked to a calendar action", rCafe.route !== "direct_action" || rCafe.action?.capability !== "calendar_event", JSON.stringify(rCafe));
+
+  // Proof the PLAN carries zero web-research work for a calendar action.
+  const calObj = "mark tomorrow in my calendar as coding";
+  const calPlan = planner.buildDirectActionPlan(normalize.normalizeObjective(calObj), understand(normalize.normalizeObjective(calObj)), routeNorm(calObj).action);
+  const calTools = calPlan.map((s) => s.tool);
+  check("calendar plan selects the calendar_event action", calTools.includes("calendar_event"));
+  check("calendar plan has ZERO search/fetch/extract/research steps", !calTools.some((t) => /search|fetch|extract|research|compare|browse|scrape|read_page|crawl/i.test(t)), calTools.join(","));
 
   // (7) Form submission with an explicit URL target.
   const d7 = routeObjective("Submit the form at https://forms.example.org/apply for me.", { outcome: "answer" });

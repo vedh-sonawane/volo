@@ -120,7 +120,7 @@ export function ObjectivePanel({ task, onEdited }: { task: Task; onEdited: () =>
           placeholder="Describe what you want done…"
         />
         <div className="mt-3 flex items-center gap-2">
-          <button className="btn btn-accent btn-rainbow text-[13px] !py-2" disabled={busy || refining} onClick={saveEdit}>
+          <button className="btn btn-accent btn-shine text-[13px] !py-2" disabled={busy || refining} onClick={saveEdit}>
             {busy ? "Saving…" : "Save & re-analyze"}
           </button>
           <button className="btn text-[13px] !py-2 gap-1.5" disabled={busy || refining} onClick={refine} title="Let Volo rewrite your prompt more clearly (same intent)">
@@ -254,7 +254,7 @@ function ConfirmDialog({ busy, onConfirm, onClose }: { busy: boolean; onConfirm:
             Keep it
           </button>
           <button
-            className="btn btn-rainbow text-[13px] !py-2.5 !px-5"
+            className="btn btn-shine text-[13px] !py-2.5 !px-5"
             style={{ background: "var(--color-err)", color: "#fff" }}
             disabled={busy}
             onClick={onConfirm}

@@ -9,6 +9,7 @@ import type { GenerateOptions, ModelProvider } from "./types";
 
 export class RuleModelProvider implements ModelProvider {
   readonly name = "rule";
+  readonly generative = false; // deterministic — never composes free-form prose
 
   async available(): Promise<boolean> {
     return false;

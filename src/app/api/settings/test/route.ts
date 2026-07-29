@@ -4,13 +4,16 @@ import { SmtpEmailProvider } from "@/lib/providers/email/smtp";
 import { OllamaModelProvider } from "@/lib/providers/model/ollama";
 import { getResearchProvider } from "@/lib/providers/research";
 import { secret } from "@/lib/config";
+import { withAuth } from "@/lib/auth/guard";
 
 export const runtime = "nodejs";
+
+export const POST = withAuth(postImpl);
 
 // POST /api/settings/test { provider: "email" | "ollama" | "research" }
 // Runs a REAL connection/auth check against the CURRENTLY SAVED config. It never
 // sends an email or moves money — email uses SMTP verify() (auth only).
-export async function POST(req: NextRequest) {
+async function postImpl(req: NextRequest) {
   let body: { provider?: string };
   try {
     body = await req.json();

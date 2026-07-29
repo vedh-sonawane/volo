@@ -33,7 +33,7 @@ import type { ModelProvider } from "@/lib/providers/model";
 import { saveTask } from "@/lib/store";
 import { id, hostOf, uniq } from "@/lib/util";
 import { summarize } from "./summarize";
-import { createPlan, buildMultiPlan, buildDirectActionPlan, buildDirectAnswerPlan, appendActionTail } from "./planner";
+import { createPlan, buildMultiPlan, buildDirectActionPlan, buildDirectAnswerPlan, buildExternalDataPlan, appendActionTail } from "./planner";
 import { authorPlan, replanWithModel } from "./llm-planner";
 import { understand } from "./understand";
 import { understandGoal, deterministicGoal } from "./goal";
@@ -41,6 +41,11 @@ import { deterministicDecompose, reconcileCategories, hasMultiCategorySignal } f
 import { routeObjective, capabilityLabel, actionParamQuestion, directActionPreviewLines, applyClarifiedParams, contentPlaceholderFields } from "./action-router";
 import { inferOutcomeNeeds, matchPaths, unmetPaths } from "./paths";
 import { capabilitySnapshot } from "./capability-snapshot";
+import { generateDirectAnswer, directAnswerFinal } from "./direct-answer";
+import { normalizeObjective } from "./normalize";
+import { detectDataRead, getDataRead, dataReadConnected, type DataRead } from "@/lib/integrations/data-reads";
+import { getAccessToken } from "@/lib/auth/integrations";
+import { currentUserId } from "@/lib/auth/context";
 import { isSuperseded } from "./runcontrol";
 import { parsePrice } from "./compare";
 import { cfg } from "@/lib/config";
@@ -98,7 +103,11 @@ export async function runTask(task: Task, emit: Emit, gen?: number): Promise<voi
 
 /** The objective plus any clarification answers the user has provided. */
 function effectiveObjective(task: Task): string {
-  return task.clarificationContext ? `${task.objective}\n\nAdditional details from the user:\n${task.clarificationContext}` : task.objective;
+  const base = task.clarificationContext ? `${task.objective}\n\nAdditional details from the user:\n${task.clarificationContext}` : task.objective;
+  // Normalize shorthand/misspellings (tmrw→tomorrow, calender→calendar, …) BEFORE
+  // any classification/routing so a typo can't derail intent detection. Quoted user
+  // content is preserved verbatim by the normalizer.
+  return normalizeObjective(base);
 }
 
 /**
@@ -373,8 +382,22 @@ async function planPhase(ctx: RunContext, model: ModelProvider): Promise<boolean
 
   // Reason about the RELEVANT capability paths for this outcome (explainable, and
   // a basis for honest missing-capability/fallback reporting). Generic — driven by
-  // the outcome's needs and what's actually connected, never by domain nouns.
-  task.paths = matchPaths(inferOutcomeNeeds(eff, task.constraints), capabilitySnapshot());
+  // the outcome's needs and what's actually connected, never by domain nouns. The
+  // model's generative flag makes answer/writing capabilities reflect reality.
+  task.paths = matchPaths(inferOutcomeNeeds(eff, task.constraints), capabilitySnapshot(model.generative));
+
+  // EXTERNAL DATA: if the objective asks for the user's real data that a CONNECTED
+  // integration can serve (e.g. "list my GitHub repos"), retrieve it for real —
+  // never answer from the model's memory. Generic + data-driven (data-reads registry);
+  // applies to any provider/read. Skipped for concrete executable actions.
+  if (decision.route !== "direct_action" && decision.route !== "mixed") {
+    const read = detectDataRead(eff);
+    if (read) {
+      task.route = "external_data";
+      task.dataReadId = read.id;
+      return planExternalData(ctx, read);
+    }
+  }
 
   if (decision.route === "direct_action" && decision.action) {
     return planDirectAction(ctx, decision.action, alreadyClarified);
@@ -545,6 +568,37 @@ function planDirectAnswer(ctx: RunContext): boolean {
   return true;
 }
 
+// ── external data retrieval (real integration API, model formats only) ───────
+function planExternalData(ctx: RunContext, read: DataRead): boolean {
+  const task = ctx.task;
+  task.directAction = undefined;
+  task.multiDomain = false;
+  task.subPlans = undefined;
+  task.plan = buildExternalDataPlan(effectiveObjective(task), task.constraints, read.label);
+  task.plannerUsed = "rule";
+  const connected = (() => {
+    try {
+      return dataReadConnected(read, currentUserId());
+    } catch {
+      return false;
+    }
+  })();
+  task.planRationale = connected
+    ? `This needs your real ${read.label} — retrieving it live from ${read.connectLabel} (never from the model's memory).`
+    : `This needs your real ${read.label} from ${read.connectLabel}, which isn't connected — Volo will explain how to connect it instead of inventing data.`;
+  ctx.setStatus("planning");
+  ctx.log(
+    "success",
+    connected
+      ? `Fetching your ${read.label} directly from ${read.connectLabel} — real data, not a guess.`
+      : `${read.connectLabel} isn't connected — Volo won't fabricate your ${read.label}.`,
+    task.planRationale
+  );
+  ctx.emit({ type: "task", task });
+  ctx.persist();
+  return true;
+}
+
 // ── reactive re-plan when a run comes up empty ───────────────────────────────
 async function maybeReplan(ctx: RunContext, model: ModelProvider): Promise<PlanStep[]> {
   const task = ctx.task;
@@ -566,7 +620,12 @@ async function maybeReplan(ctx: RunContext, model: ModelProvider): Promise<PlanS
 async function finalize(ctx: RunContext, model: ModelProvider) {
   const task = ctx.task;
 
-  if (task.route === "direct_answer") {
+  if (task.route === "external_data") {
+    // Retrieve the user's REAL data from a connected integration and let the model
+    // FORMAT it only. Never invents data; if not connected, says how to connect.
+    task.finalResult = await externalDataFinal(ctx, model);
+    ctx.emit({ type: "final", final: task.finalResult });
+  } else if (task.route === "direct_answer") {
     // Compose the informational/creative answer directly (no research to
     // summarize). If no model is connected, say so honestly — never fabricate.
     const answer = await generateDirectAnswer(task.objective, model);
@@ -723,6 +782,89 @@ function directActionPreview(da: DirectAction, draft?: EmailDraft): string {
  * what the provider actually did. Never claims success without a provider result;
  * never reports "no candidates found" (there was no research).
  */
+// Retrieve the user's real data from a connected integration; the model may FORMAT
+// it (never invent/omit). Honest at every branch: not-connected → explain connect;
+// token gone → reconnect; API error → the real error; success → the real list.
+async function externalDataFinal(ctx: RunContext, model: ModelProvider): Promise<FinalResult> {
+  const task = ctx.task;
+  const read = getDataRead(task.dataReadId);
+  if (!read) {
+    return { headline: "Couldn't retrieve the data", summary: "The requested data source is no longer available.", takeaways: [], limitations: [], offeredActions: [], nextAction: "Try rephrasing the request.", modelUsed: false };
+  }
+  const uid = currentUserId();
+
+  if (!dataReadConnected(read, uid)) {
+    return {
+      headline: `Connect ${read.connectLabel} to do this`,
+      summary: `This needs your real ${read.label} from ${read.connectLabel}. ${read.connectLabel} isn't connected (or the required permission isn't granted), so Volo won't answer from memory or invent a list — that would be dishonest. Connect ${read.connectLabel} in Settings → Integrations, grant the "${read.scopeGroup}" permission, then re-run this objective.`,
+      takeaways: [],
+      limitations: [`Volo only reports ${read.label} that ${read.connectLabel}'s API actually returns — it never fabricates them.`],
+      offeredActions: [],
+      nextAction: `Open Settings → Integrations, connect ${read.connectLabel}, then re-run.`,
+      modelUsed: false,
+    };
+  }
+
+  const token = await getAccessToken(uid, read.provider);
+  if (!token) {
+    return {
+      headline: `Reconnect ${read.connectLabel}`,
+      summary: `Your ${read.connectLabel} connection needs to be re-authorized, so Volo couldn't read your ${read.label}. Reconnect ${read.connectLabel} in Settings → Integrations, then re-run. Nothing was fabricated.`,
+      takeaways: [], limitations: [], offeredActions: [], nextAction: `Reconnect ${read.connectLabel} in Settings → Integrations.`, modelUsed: false,
+    };
+  }
+
+  let result;
+  try {
+    result = await read.run(token);
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : "the API request failed";
+    ctx.log("info", `${read.connectLabel} API error while reading ${read.label}: ${msg}`);
+    return {
+      headline: `Couldn't read your ${read.label}`,
+      summary: `Volo reached ${read.connectLabel} but the API returned an error, so it has nothing real to show — and won't invent it. ${msg}`,
+      takeaways: [], limitations: [], offeredActions: [],
+      nextAction: `Check the ${read.connectLabel} connection/permission in Settings and try again.`, modelUsed: false,
+    };
+  }
+
+  // Record the API as a real source trace (every value links to its source).
+  task.sources.push({ url: result.sourceUrl, title: `${read.connectLabel} API — ${read.label}`, fetchedAt: Date.now() });
+
+  const items = result.items;
+  const takeaways = items.slice(0, 100).map((i) => `${i.title}${i.sub ? ` (${i.sub})` : ""}${i.url ? ` — ${i.url}` : ""}`);
+  const deterministicList = items.length ? items.map((i) => `• ${i.title}${i.sub ? ` (${i.sub})` : ""}`).join("\n") : "";
+
+  // The model may FORMAT the real names into readable prose — never add/remove/invent.
+  let summary = items.length
+    ? `Your ${read.label} (${items.length}), read live from ${read.connectLabel}:\n\n${deterministicList}`
+    : `${read.connectLabel} returned no ${read.label} for your account.`;
+  let modelUsed = false;
+  if (items.length && model.generative) {
+    const names = items.map((i) => i.title).join("\n");
+    const formatted = await model.generate(
+      `The user asked: "${task.objective}". Here is the COMPLETE, REAL list of their ${read.label} (retrieved from the ${read.connectLabel} API). Present it back to them clearly and briefly. Use ONLY these exact names — do NOT add, remove, rename, or invent any, and do not claim there are more.\n\n${names}`,
+      { system: "You format a provided list of real data into a clear reply. Never invent, omit, or alter items — output only what is given.", maxTokens: 600, temperature: 0 }
+    );
+    if (formatted && formatted.trim()) {
+      summary = formatted.trim();
+      modelUsed = true;
+    }
+  }
+
+  return {
+    headline: `Your ${read.label} (${items.length})`,
+    summary,
+    takeaways,
+    limitations: [],
+    offeredActions: [],
+    nextAction: items.length
+      ? `Read live from ${read.connectLabel} just now — every name above is real, with the source linked.`
+      : `No ${read.label} were returned by ${read.connectLabel}.`,
+    modelUsed,
+  };
+}
+
 function directActionFinal(task: Task): FinalResult {
   const da = task.directAction!;
   const cap = capabilityLabel(da.capability);
@@ -745,6 +887,14 @@ function directActionFinal(task: Task): FinalResult {
   } else if (res) {
     switch (res.status) {
       case "succeeded":
+        if (res.mode === "export") {
+          // NOTHING external happened — only a local artifact was prepared. Never
+          // say created/added/scheduled/sent here; the message is already honest.
+          headline = `${cap} prepared (not created)`;
+          summary = res.message;
+          nextAction = `Import the prepared file into your calendar app yourself. Connect Google Calendar in Settings → Integrations to have Volo create the event directly next time.`;
+          break;
+        }
         headline =
           res.mode === "test" ? `${cap} completed (test mode)` : res.mode === "sandbox" ? `${cap} simulated (sandbox)` : `${cap} completed`;
         summary =
@@ -793,61 +943,6 @@ function directActionFinal(task: Task): FinalResult {
   }
 
   return { headline, summary, takeaways, limitations: [], offeredActions: [], nextAction };
-}
-
-// ── direct informational / creative answer ───────────────────────────────────
-interface DirectAnswer {
-  text: string;
-  modelUsed: boolean;
-}
-
-/**
- * Compose a direct answer from the model's own knowledge/generation. Honest: it
- * NEVER fabricates specific external facts — the system prompt instructs the
- * model to say so when a question genuinely needs current/external data. With no
- * model connected there is no answer to invent, so it returns empty.
- */
-async function generateDirectAnswer(objective: string, model: ModelProvider): Promise<DirectAnswer> {
-  if (!(await model.available())) return { text: "", modelUsed: false };
-  const text = await model.generate(
-    `Respond to this request directly and helpfully.\n\nRequest: ${objective}`,
-    {
-      system:
-        "You answer a user's request directly. If it is creative (a joke, story, name, idea, poem, etc.), produce it. " +
-        "If it is a general-knowledge or reasoning question, answer it clearly. " +
-        "Do NOT fabricate specific real-world facts, prices, current events, statistics, or sources you are unsure of — " +
-        "if the request genuinely needs up-to-date or external information you don't have, say so in one sentence instead of guessing.",
-      maxTokens: 700,
-      temperature: 0.7,
-    }
-  );
-  const trimmed = (text || "").trim();
-  return { text: trimmed, modelUsed: trimmed.length > 0 };
-}
-
-function directAnswerFinal(task: Task, answer: DirectAnswer): FinalResult {
-  if (answer.text) {
-    return {
-      headline: "Direct answer",
-      summary: answer.text,
-      takeaways: [],
-      limitations: ["Composed from the model's general knowledge, not verified against live sources. For current or external facts, ask for up-to-date info and Volo will research it."],
-      offeredActions: [],
-      nextAction: "Ask a follow-up, refine the request, or ask Volo to research it for current/verified facts.",
-      modelUsed: true,
-    };
-  }
-  // No model connected — nothing to fabricate; report honestly.
-  return {
-    headline: "Connect a model to answer this directly",
-    summary:
-      "This request can be answered directly — it needs no web research. But no AI model is connected, so Volo has nothing to compose the answer with and will not fabricate one. Connect a free local model (Ollama) in Settings, then re-run.",
-    takeaways: [],
-    limitations: ["Volo never invents a creative or factual answer without a model — that would be dishonest."],
-    offeredActions: [],
-    nextAction: "Enable Ollama (free, local) in Settings, then re-run this objective.",
-    modelUsed: false,
-  };
 }
 
 function deriveLimitations(task: Task): string[] {

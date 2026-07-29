@@ -1,7 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
 import { allConfig, hasSecret, setConfig, setSecret } from "@/lib/config";
+import { withAuth } from "@/lib/auth/guard";
 
 export const runtime = "nodejs";
+
+export const GET = withAuth(getImpl);
+export const POST = withAuth(postImpl);
 
 // Only these keys can be set from the browser. Sensitive values live in SECRET_KEYS
 // and are stored encrypted; their raw values are NEVER returned to the client.
@@ -21,7 +25,7 @@ const SECRET_KEYS = ["SMTP_PASS", "STRIPE_SECRET_KEY"];
 
 // GET — current settings. Config values are returned; secrets return ONLY a
 // "set" boolean (+ a mask). The raw secret never leaves the server.
-export async function GET() {
+async function getImpl() {
   const stored = allConfig();
   const config: Record<string, string> = {};
   for (const k of CONFIG_KEYS) config[k] = stored[k] ?? "";
@@ -35,7 +39,7 @@ export async function GET() {
 
 // POST — update settings. Unknown keys are ignored. A secret is only changed
 // when a non-empty value is supplied; an explicit empty string clears it.
-export async function POST(req: NextRequest) {
+async function postImpl(req: NextRequest) {
   let body: { config?: Record<string, string>; secrets?: Record<string, string> };
   try {
     body = await req.json();

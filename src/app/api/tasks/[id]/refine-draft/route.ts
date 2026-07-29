@@ -2,14 +2,17 @@ import { NextRequest, NextResponse } from "next/server";
 import { getTask, saveTask } from "@/lib/store";
 import { resolveModel } from "@/lib/providers/model";
 import { refineEmail } from "@/lib/engine/refine";
+import { withAuth } from "@/lib/auth/guard";
 
 export const runtime = "nodejs";
+
+export const POST = withAuth(postImpl);
 
 // POST /api/tasks/[id]/refine-draft — polish the pending EMAIL draft's subject +
 // body. The recipient/target is NEVER passed to the model or changed. Refined
 // content is validated (no placeholders) before it replaces the draft, and the
 // action still requires approval before anything is sent.
-export async function POST(_req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+async function postImpl(_req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
   const task = getTask(id);
   if (!task) return NextResponse.json({ ok: false, error: "Task not found" }, { status: 404 });

@@ -71,7 +71,7 @@ export function Composer() {
           <kbd className="text-[11px] text-[var(--color-faint)] font-[var(--font-mono)] hidden sm:inline">
             ⌘/Ctrl + ↵
           </kbd>
-          <button className="btn btn-accent btn-rainbow" onClick={submit} disabled={busy}>
+          <button className="btn btn-accent btn-shine" onClick={submit} disabled={busy}>
             {busy ? (
               <>
                 <Spinner /> Creating…

@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useState } from "react";
 import type { ObjectiveSummary } from "@/lib/types";
 import { STATUS_META, timeAgo } from "@/lib/ui";
@@ -8,23 +9,45 @@ import { Wordmark } from "@/components/Wordmark";
 import { Composer } from "@/components/Composer";
 import { ThemeToggle } from "@/components/ThemeToggle";
 
+function greetingFor(date = new Date()): string {
+  const h = date.getHours();
+  if (h < 5) return "Good night";
+  if (h < 12) return "Good morning";
+  if (h < 17) return "Good afternoon";
+  if (h < 21) return "Good evening";
+  return "Good night";
+}
+
 // The home screen is a persistent objective control center, not a chat log.
 // It renders ONLY real objectives fetched from the backend (the DB is the source
 // of truth) and polls for live state — no fake timers, no seeded example rows.
 export function Dashboard() {
+  const router = useRouter();
   const [objectives, setObjectives] = useState<ObjectiveSummary[] | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [name, setName] = useState<string>("");
+
+  useEffect(() => {
+    fetch("/api/auth/me")
+      .then((r) => r.json())
+      .then((d) => {
+        if (!d.user) { router.replace("/login"); return; }
+        setName(d.user.name || "");
+      })
+      .catch(() => {});
+  }, [router]);
 
   const load = useCallback(async () => {
     try {
       const res = await fetch("/api/tasks", { cache: "no-store" });
+      if (res.status === 401) { router.replace("/login"); return; }
       const data = await res.json();
       setObjectives(data.objectives ?? []);
       setError(null);
     } catch {
       setError("Couldn't reach the objective store.");
     }
-  }, []);
+  }, [router]);
 
   useEffect(() => {
     load();
@@ -47,6 +70,12 @@ export function Dashboard() {
           <div className="flex items-center gap-2">
             <ThemeToggle />
             <Link href="/settings" className="btn btn-quiet text-[13px]">Settings</Link>
+            <button
+              className="btn btn-quiet text-[13px]"
+              onClick={async () => { await fetch("/api/auth/logout", { method: "POST" }); router.replace("/login"); }}
+            >
+              Sign out
+            </button>
           </div>
         </div>
       </header>
@@ -54,14 +83,22 @@ export function Dashboard() {
 
       <div className="max-w-5xl mx-auto px-6 pb-24">
         {/* Composer */}
-        <section className="pt-8 pb-10">
-          <div className="eyebrow mb-3">New objective</div>
+        <section className="pt-10 pb-10">
           <h1
-            className="mb-5 font-display"
-            style={{ fontSize: "clamp(1.9rem,3.8vw,2.6rem)", lineHeight: 1.05, letterSpacing: "-0.02em", fontWeight: 600 }}
+            className="font-display"
+            style={{ fontSize: "clamp(1.9rem,3.8vw,2.7rem)", lineHeight: 1.06, letterSpacing: "-0.02em", fontWeight: 600 }}
           >
-            What do you want done?
+            {greetingFor()}
+            {name && (
+              <>
+                , <span style={{ fontStyle: "italic" }}>{name}</span>
+              </>
+            )}
+            .
           </h1>
+          <p className="mt-2 mb-6 text-[15px] sm:text-[16px] text-[var(--color-muted)]">
+            What would you like Volo to accomplish?
+          </p>
           <div className="card p-4 sm:p-6">
             <Composer />
           </div>

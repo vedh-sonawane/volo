@@ -460,9 +460,9 @@ export const KIT: Record<string, ExecutableTool> = {
   ),
   calendar_event: declaredAction(
     "calendar_event",
-    "Export a calendar file (.ics)",
-    "Export a downloadable .ics file for an event (you import it yourself — not a calendar-service event).",
-    "Produces a real, standards-compliant .ics FILE you import into your calendar app — a file export, not an event created in Google/Outlook. Generated locally, no account.",
+    "Add a calendar event",
+    "Create the event in your connected Google Calendar; if none is connected, prepare a downloadable .ics you import yourself.",
+    "With Google Calendar connected, creates the event for real via the Calendar API (with approval). Otherwise produces a real, standards-compliant .ics FILE you import into your calendar app — a file export, NOT an event created anywhere. Never claims an event was created unless the API confirmed it.",
     true
   ),
 };

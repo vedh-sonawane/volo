@@ -4,8 +4,11 @@ import { getTask, saveTask } from "@/lib/store";
 import { applyDecision } from "@/lib/engine/decision";
 import { resumeTask } from "@/lib/engine/executor";
 import { id as newId } from "@/lib/util";
+import { withAuth } from "@/lib/auth/guard";
 
 export const runtime = "nodejs";
+
+export const POST = withAuth(postImpl);
 
 // POST /api/tasks/[id]/approve — approve or reject a pending action.
 //
@@ -15,7 +18,7 @@ export const runtime = "nodejs";
 // is "uncertain" and never auto-retried (no duplicate charge); an already-run
 // action is not repeated. Declining executes nothing and is a fast, safe
 // terminal action.
-export async function POST(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+async function postImpl(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
   const task = getTask(id);
   if (!task) return NextResponse.json({ error: "Task not found" }, { status: 404 });

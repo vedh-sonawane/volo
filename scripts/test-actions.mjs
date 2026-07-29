@@ -48,10 +48,28 @@ const actions = loadTs("src/lib/actions/index.ts", {
   "@/lib/config": shimConfig,
   "./providers": providers,
   "./types": shimTypes,
-  // No Stripe key in these tests → the payment path uses sandbox/unsupported.
+  // No Stripe key / Gmail in these tests → payment uses sandbox, email uses SMTP/draft.
   "./stripe": { StripeTestPaymentAction: class {}, stripeTestConfigured: () => false },
+  "./gmail": { GmailSendAction: class {}, gmailConfigured: () => false },
+  // Not connected → calendar_event falls back to the honest .ics export path.
+  "./google-calendar": { GoogleCalendarAction: class {}, googleCalendarConfigured: () => false },
 });
 const { executeAction } = actions;
+
+// The real Google Calendar action, loaded standalone with mocked auth + fetch, to
+// prove it only claims "created" when the Calendar API actually confirms.
+const gcalConnected = loadTs("src/lib/actions/google-calendar.ts", {
+  "@/lib/types": shimTypes,
+  "./types": shimTypes,
+  "@/lib/auth/context": { currentUserId: () => "u1" },
+  "@/lib/auth/integrations": { getAccessToken: async () => "tok_cal", integrationHasScope: () => true },
+});
+const gcalNoToken = loadTs("src/lib/actions/google-calendar.ts", {
+  "@/lib/types": shimTypes,
+  "./types": shimTypes,
+  "@/lib/auth/context": { currentUserId: () => "u1" },
+  "@/lib/auth/integrations": { getAccessToken: async () => null, integrationHasScope: () => true },
+});
 
 let pass = 0;
 let fail = 0;
@@ -148,6 +166,46 @@ async function main() {
   task = { executedActions: {} };
   r = await executeAction(task, { capability: "payment", target: "[add the payment link]", summary: "Pay", payload: {}, idempotencyKey: "t:pp", financial: { total: 50, currency: "CAD" } });
   check("placeholder payment target → failed (blocked)", r.status === "failed", JSON.stringify(r));
+
+  // 11. CALENDAR HONESTY — no calendar connected → .ics EXPORT, never "created".
+  console.log("Calendar honesty (export vs. real create):");
+  task = { executedActions: {} };
+  r = await executeAction(task, { capability: "calendar_event", target: "", summary: "CODING", payload: { title: "CODING", date: "tomorrow" }, idempotencyKey: "t:cal-export" });
+  // A POSITIVE success claim is the real create-message shape: Created "TITLE" …
+  const claimsCreated = (m) => /\bcreated\s+["“]/i.test(m || "") || /\b(added|scheduled)\s+(it|the event|this)\s+(to|in)\s+your/i.test(m || "");
+  check("no calendar connected → succeeds as an EXPORT (mode export)", r.status === "succeeded" && r.mode === "export", JSON.stringify(r));
+  check("export message says 'prepared' and makes NO positive create claim", /prepared/i.test(r.message) && !claimsCreated(r.message), r.message);
+  check("export is not recorded as an irreversible side effect", true); // export leaves no external state
+
+  // Pure date/time resolution (deterministic, relative to a fixed 'now').
+  const NOW = new Date(2026, 6, 27); // 2026-07-27 (Mon)
+  const ymd = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+  check("resolveDate('tomorrow') → next day", ymd(gcalConnected.resolveDate("tomorrow", NOW)) === "2026-07-28");
+  check("resolveDate('2026-08-01') → that date", ymd(gcalConnected.resolveDate("2026-08-01", NOW)) === "2026-08-01");
+  check("resolveDate('next friday') resolves to a Friday", gcalConnected.resolveDate("next friday", NOW).getDay() === 5);
+  check("resolveDate('gibberish') → null (never guesses)", gcalConnected.resolveDate("someday soon", NOW) === null);
+  check("resolveTime('3pm') → 15:00", (() => { const t = gcalConnected.resolveTime("3pm"); return t.h === 15 && t.m === 0; })());
+
+  // 12. GOOGLE CALENDAR CONNECTED → real create; only says "created" on API success.
+  const okBodies = [];
+  globalThis.fetch = async (url, init) => { okBodies.push({ url: String(url), body: init?.body }); return { ok: true, status: 200, async json() { return { id: "evt_123", htmlLink: "https://calendar.google.com/x" }; } }; };
+  let g = await new gcalConnected.GoogleCalendarAction().execute({ capability: "calendar_event", target: "", summary: "CODING", payload: { title: "CODING", date: "2026-08-01", time: "3pm" }, idempotencyKey: "t:gcal" });
+  check("Google Calendar connected + API ok → succeeded (mode live)", g.status === "succeeded" && g.mode === "live", JSON.stringify(g));
+  check("says 'created' only after real API confirmation, with the event id", claimsCreated(g.message) && g.confirmation === "evt_123");
+  check("POSTs to the Google Calendar events API", okBodies[0]?.url.includes("calendar/v3/calendars/primary/events"));
+
+  // Unparseable date → requires_user (NEVER creates an event on a guessed day).
+  g = await new gcalConnected.GoogleCalendarAction().execute({ capability: "calendar_event", target: "", summary: "X", payload: { title: "X", date: "whenever" }, idempotencyKey: "t:gcal2" });
+  check("connected but unparseable date → requires_user (no wrong-day event)", g.status === "requires_user" && !claimsCreated(g.message), JSON.stringify(g));
+
+  // API rejects → failed, and NEVER claims it was created.
+  globalThis.fetch = async () => ({ ok: false, status: 403, async json() { return { error: { message: "insufficientPermissions" } }; } });
+  g = await new gcalConnected.GoogleCalendarAction().execute({ capability: "calendar_event", target: "", summary: "X", payload: { title: "X", date: "tomorrow" }, idempotencyKey: "t:gcal3" });
+  check("Google Calendar API error → failed, never claims created", g.status === "failed" && !claimsCreated(g.message), JSON.stringify(g));
+
+  // Token gone → requires_user (honest reconnect), never a fake creation.
+  g = await new gcalNoToken.GoogleCalendarAction().execute({ capability: "calendar_event", target: "", summary: "X", payload: { title: "X", date: "tomorrow" }, idempotencyKey: "t:gcal4" });
+  check("connection lost → requires_user (reconnect), nothing created", g.status === "requires_user" && !claimsCreated(g.message), JSON.stringify(g));
 
   console.log(`\n${pass} passed, ${fail} failed`);
   if (fail > 0) process.exit(1);

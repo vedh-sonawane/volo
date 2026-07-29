@@ -9,7 +9,8 @@ import { RuleModelProvider } from "./rule";
 import { OllamaModelProvider } from "./ollama";
 import { cfg } from "@/lib/config";
 
-export type { ModelProvider, GenerateOptions } from "./types";
+export type { ModelProvider, GenerateOptions, ModelCapability } from "./types";
+export { modelCapabilities, GENERATIVE_CAPABILITIES } from "./types";
 
 const rule = new RuleModelProvider();
 

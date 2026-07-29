@@ -2,15 +2,18 @@ import { NextRequest, NextResponse } from "next/server";
 import { getTask, saveTask } from "@/lib/store";
 import { resumeTask } from "@/lib/engine/executor";
 import { id as newId } from "@/lib/util";
+import { withAuth } from "@/lib/auth/guard";
 
 export const runtime = "nodejs";
+
+export const POST = withAuth(postImpl);
 
 // POST /api/tasks/[id]/reply — relay an external reply so a waiting objective can
 // resume (Phase 9). Volo can't watch an inbox for free, so the user provides the
 // reply they received; Volo records it honestly and continues execution from the
 // wait checkpoint. This works even after a server restart — the waiting state is
 // persisted in SQLite.
-export async function POST(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+async function postImpl(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
   const task = getTask(id);
   if (!task) return NextResponse.json({ error: "Task not found" }, { status: 404 });

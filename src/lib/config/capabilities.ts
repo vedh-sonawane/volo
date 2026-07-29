@@ -3,10 +3,23 @@
 // production capability look available, and "connected" only when it can execute.
 
 import { cfg, secret, secretConfigured } from "./index";
+import { currentUserId } from "@/lib/auth/context";
+import { integrationHasScope } from "@/lib/auth/integrations";
 import { smtpConfigured } from "@/lib/providers/email";
 import { SmtpEmailProvider } from "@/lib/providers/email/smtp";
 import { getResearchProvider } from "@/lib/providers/research";
-import { resolveModel } from "@/lib/providers/model";
+import { resolveModel, modelCapabilities, type ModelCapability } from "@/lib/providers/model";
+
+// Human labels for the generic model capabilities (not provider-specific).
+const MODEL_CAP_LABEL: Record<ModelCapability, string> = {
+  planning: "planning",
+  clarification: "clarifying questions",
+  direct_answer: "direct answers",
+  generation: "writing & generation",
+};
+function describeModelCaps(caps: ModelCapability[]): string {
+  return caps.map((c) => MODEL_CAP_LABEL[c]).join(", ") || "the deterministic engine only";
+}
 
 export type CapStatus =
   | "connected" // configured, tested, can execute the real action
@@ -46,14 +59,23 @@ export function statusLabel(s: CapStatus): string {
 export async function computeCapabilities(deep = false): Promise<Capability[]> {
   const caps: Capability[] = [];
 
-  // ── AI planning (model) ──
+  // ── AI model (a connected generative model exposes ALL its capabilities) ──
   const modelChoice = cfg("MODEL_PROVIDER", "rule").toLowerCase();
   if (modelChoice === "ollama") {
     const model = await resolveModel();
-    if (model.name === "ollama") caps.push({ key: "model", label: `AI planning (Ollama · ${cfg("OLLAMA_MODEL", "llama3.2")})`, status: "connected", detail: "The local model authors plans and understands goals.", verified: true });
-    else caps.push({ key: "model", label: "AI planning (Ollama)", status: "connection_failed", detail: "Ollama is selected but not reachable or the model isn't installed. Volo falls back to the deterministic engine.", verified: true });
+    if (model.name === "ollama") {
+      caps.push({
+        key: "model",
+        label: `AI model (Ollama · ${cfg("OLLAMA_MODEL", "llama3.2")})`,
+        status: "connected",
+        detail: `Connected & executable — powers ${describeModelCaps(modelCapabilities(model))}. It composes answers, drafts, and summaries from the objective; nothing is fabricated.`,
+        verified: true,
+      });
+    } else {
+      caps.push({ key: "model", label: "AI model (Ollama)", status: "connection_failed", detail: "Ollama is selected but not reachable or the model isn't installed. Volo falls back to the deterministic engine (planning still works; direct answers/writing need a model).", verified: true });
+    }
   } else {
-    caps.push({ key: "model", label: "AI planning", status: "not_configured", detail: "Using the built-in deterministic engine (no AI). Connect Ollama for dynamic planning + clarifying questions." });
+    caps.push({ key: "model", label: "AI model", status: "not_configured", detail: "Using the built-in deterministic engine (no AI). Connect Ollama for dynamic planning, clarifying questions, direct answers, and writing/generation." });
   }
 
   // ── Research ──
@@ -79,8 +101,19 @@ export async function computeCapabilities(deep = false): Promise<Capability[]> {
     caps.push({ key: "email", label: "Send email", status: "draft_export_only", detail: "No email account connected — Volo prepares a ready-to-send draft (.eml) but does NOT send. Add SMTP to send for real." });
   }
 
-  // ── Calendar ──
-  caps.push({ key: "calendar", label: "Calendar file (.ics) export", status: "draft_export_only", detail: "Volo generates a downloadable .ics you import yourself. This is a file export — it does NOT create an event in Google/Outlook. A real calendar integration isn't configured." });
+  // ── Calendar ── (real Google Calendar create when connected; else honest .ics export)
+  const gcalConnected = (() => {
+    try {
+      return integrationHasScope(currentUserId(), "google", "https://www.googleapis.com/auth/calendar.events");
+    } catch {
+      return false;
+    }
+  })();
+  if (gcalConnected) {
+    caps.push({ key: "calendar", label: "Calendar event", status: "connected", detail: "Google Calendar connected — Volo creates the event directly via the Calendar API (with your approval)." });
+  } else {
+    caps.push({ key: "calendar", label: "Calendar file (.ics) export", status: "draft_export_only", detail: "No calendar connected — Volo prepares a downloadable .ics you import yourself; it does NOT create a calendar event. Connect Google Calendar in Settings to have Volo create events directly." });
+  }
 
   // ── Booking / form / payment ──
   const sandbox = cfg("ACTION_MODE", "").toLowerCase() === "sandbox";

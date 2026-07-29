@@ -173,7 +173,7 @@ function ApprovalCard({ approval, taskId, onDecided, canRefine }: { approval: Ap
       {status === "pending" ? (
         <div className="mt-4">
           <div className="flex items-center gap-2 flex-wrap">
-            <button className="btn btn-accent btn-rainbow text-[13px] !py-2" disabled={busy || refining} onClick={() => decide("approved")}>
+            <button className="btn btn-accent btn-shine text-[13px] !py-2" disabled={busy || refining} onClick={() => decide("approved")}>
               {busy ? "Working…" : approval.financial ? `Confirm & pay ${approval.financial.currency} ${approval.financial.total}` : "Approve"}
             </button>
             <button className="btn btn-ghost text-[13px] !py-2" disabled={busy || refining} onClick={() => decide("rejected")}>

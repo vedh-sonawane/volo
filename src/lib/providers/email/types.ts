@@ -12,7 +12,10 @@
 export interface EmailMessage {
   to: string;
   subject: string;
+  /** Plain-text body (always provided — the reliable fallback for every client). */
   body: string;
+  /** Optional rich HTML body; when present it's sent as multipart alongside `body`. */
+  html?: string;
 }
 
 export interface SendResult {

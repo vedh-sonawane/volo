@@ -2,15 +2,18 @@ import { NextRequest, NextResponse } from "next/server";
 import { getTask, saveTask } from "@/lib/store";
 import { createTask } from "@/lib/engine/create";
 import { supersedeRun } from "@/lib/engine/runner";
+import { withAuth } from "@/lib/auth/guard";
 
 export const runtime = "nodejs";
+
+export const POST = withAuth(postImpl);
 
 // POST /api/tasks/[id]/edit — replace the objective and RE-ANALYZE from scratch.
 //
 // Editing the prompt supersedes any in-flight run, then rebuilds the task from
 // the new objective (same id + createdAt) with all prior progress cleared and a
 // fresh, non-terminal status. Re-opening the stream then re-runs the new prompt.
-export async function POST(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+async function postImpl(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
   const existing = getTask(id);
   if (!existing) return NextResponse.json({ error: "Task not found" }, { status: 404 });

@@ -1,15 +1,18 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getTask, saveTask } from "@/lib/store";
 import { id as newId } from "@/lib/util";
+import { withAuth } from "@/lib/auth/guard";
 
 export const runtime = "nodejs";
+
+export const POST = withAuth(postImpl);
 
 // POST /api/tasks/[id]/clarify — the user answers the minimal blocking questions
 // Volo asked. We merge the answers into the objective, clear the clarification
 // state, and reset the task to a runnable state. The client then re-opens the
 // SSE stream, which re-plans WITH the answers and executes. (Kept async so the
 // slow re-planning doesn't block this request.)
-export async function POST(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+async function postImpl(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
   const task = getTask(id);
   if (!task) return NextResponse.json({ error: "Task not found" }, { status: 404 });

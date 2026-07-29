@@ -3,12 +3,13 @@ import { createTask } from "@/lib/engine/create";
 import { listTasks, saveTask } from "@/lib/store";
 import type { ObjectiveSummary } from "@/lib/types";
 import { needsInput, nextActionFor, progressOf } from "@/lib/ui";
+import { withAuth } from "@/lib/auth/guard";
 
 export const runtime = "nodejs";
 
 // POST /api/tasks — create a task from an objective (does not execute yet;
 // execution starts when the client opens the /stream endpoint).
-export async function POST(req: NextRequest) {
+export const POST = withAuth(async (req: NextRequest) => {
   let body: { objective?: string };
   try {
     body = await req.json();
@@ -23,12 +24,12 @@ export async function POST(req: NextRequest) {
   const task = createTask(objective);
   saveTask(task);
   return NextResponse.json({ task }, { status: 201 });
-}
+});
 
 // GET /api/tasks — all persisted objectives, summarized for the dashboard.
 // Everything here is derived from real stored state (the DB is the source of
 // truth); nothing is fabricated.
-export async function GET() {
+export const GET = withAuth(async () => {
   const objectives: ObjectiveSummary[] = listTasks(100).map((t) => ({
     id: t.id,
     title: t.title || t.objective,
@@ -43,4 +44,4 @@ export async function GET() {
     lastActivity: t.timeline.length ? t.timeline[t.timeline.length - 1].message : undefined,
   }));
   return NextResponse.json({ objectives });
-}
+});

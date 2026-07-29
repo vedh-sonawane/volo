@@ -245,6 +245,13 @@ export function buildDirectAnswerPlan(objective: string, c: TaskConstraints): Pl
   return [reason, answer];
 }
 
+/** Minimal plan for retrieving the user's real data from a connected integration.
+ *  The actual API fetch + formatting happens in finalize (external_data route). */
+export function buildExternalDataPlan(objective: string, c: TaskConstraints, label: string): PlanStep[] {
+  const reason = step({ description: `Retrieve ${label} live from your connected account`, tool: "reason", input: { objective, constraints: c }, dependsOn: [] });
+  return [reason];
+}
+
 export function createPlan(objective: string, c: TaskConstraints): PlanStep[] {
   const schema = schemaFor(c.domain, c.outcome);
   const label = c.entityLabel || "option";

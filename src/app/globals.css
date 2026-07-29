@@ -250,71 +250,61 @@ body {
   background: var(--ghost-hover);
 }
 
-/* ── Rainbow ring — reserved for the FEW primary actions ─────────────────────
-   HIDDEN until hover. On hover: a thin conic rainbow border appears and rotates
-   SLOWLY, plus a soft rainbow glow that bleeds a little past the edge and fades
-   outward. Uses @property for smooth rotation; degrades gracefully. */
-@property --volo-angle {
-  syntax: "<angle>";
-  inherits: false;
-  initial-value: 0deg;
-}
-@keyframes volo-rainbow-spin {
-  to {
-    --volo-angle: 360deg;
-  }
-}
-.btn-rainbow {
+/* ── Metallic shine — the premium primary-action effect ──────────────────────
+   Reserved for the FEW primary actions (.btn-shine). A bright metallic band is
+   parked off-screen and driven by a TRANSITION, so it sweeps to the RIGHT when the
+   button is hovered and back to the LEFT when the pointer leaves — 1.3s each way,
+   leaving a subtle liquid-metal sheen. Clipped to the button; never blocks clicks. */
+.btn-shine {
   position: relative;
-  z-index: 0;
+  overflow: hidden;
   isolation: isolate;
 }
-/* crisp thin border ring */
-.btn-rainbow::before {
+/* the sweeping light band — parked off the LEFT at rest; transition drives both ways */
+.btn-shine::after {
   content: "";
   position: absolute;
-  inset: -1.5px;
-  z-index: -1;
+  top: -60%;
+  bottom: -60%;
+  left: -20%;
+  width: 45%;
+  z-index: 2;
+  pointer-events: none;
+  transform: translateX(-260%) rotate(18deg);
+  transition: transform 1.3s cubic-bezier(0.35, 0, 0.2, 1);
+  background: linear-gradient(
+    90deg,
+    transparent 0%,
+    color-mix(in srgb, #ffffff 35%, transparent) 40%,
+    #ffffff 50%,
+    color-mix(in srgb, #ffffff 35%, transparent) 60%,
+    transparent 100%
+  );
+  filter: blur(2px);
+  opacity: 1;
+  mix-blend-mode: screen;
+}
+/* a faint fixed sheen so it reads as brushed metal even at rest */
+.btn-shine::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  pointer-events: none;
   border-radius: inherit;
-  padding: 1.5px;
-  background: conic-gradient(
-    from var(--volo-angle),
-    #ff5f6d, #ffc371, #4be0a8, #4d9fff, #a06bff, #ff5f6d
-  );
-  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
-  -webkit-mask-composite: xor;
-  mask-composite: exclude;
-  opacity: 0;
-  transition: opacity 0.4s ease;
+  background: linear-gradient(180deg, color-mix(in srgb, #ffffff 22%, transparent), transparent 45%, color-mix(in srgb, #000000 12%, transparent));
+  opacity: 0.5;
 }
-/* soft outer glow that bleeds beyond the button and fades away outward */
-.btn-rainbow::after {
-  content: "";
-  position: absolute;
-  inset: -5px;
-  z-index: -2;
-  border-radius: calc(var(--radius) + 4px);
-  background: conic-gradient(
-    from var(--volo-angle),
-    #ff5f6d, #ffc371, #4be0a8, #4d9fff, #a06bff, #ff5f6d
-  );
-  filter: blur(9px);
-  opacity: 0;
-  transition: opacity 0.45s ease;
+/* hover → sweep the band across to the RIGHT (parks off-screen right) */
+.btn-shine:hover:not(:disabled)::after {
+  transform: translateX(560%) rotate(18deg);
 }
-.btn-rainbow:hover::before {
-  opacity: 0.95;
-  animation: volo-rainbow-spin 9s linear infinite;
-}
-.btn-rainbow:hover::after {
-  opacity: 0.45;
-  animation: volo-rainbow-spin 9s linear infinite;
+/* pointer leaves → the transition reverses, sweeping the band back to the LEFT */
+.btn-shine:hover:not(:disabled) {
+  box-shadow: 0 12px 34px -12px color-mix(in srgb, var(--color-accent) 70%, transparent), 0 0 0 0.5px color-mix(in srgb, #fff 30%, transparent) inset;
 }
 @media (prefers-reduced-motion: reduce) {
-  .btn-rainbow:hover::before,
-  .btn-rainbow:hover::after {
-    animation: none;
-  }
+  .btn-shine::after { transition: none; }
 }
 
 /* ── Magic "refine" button — black (light) / deep blue (dark), yellow stars ───*/

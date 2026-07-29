@@ -248,7 +248,7 @@ function CenterMessage({ title, body }: { title: string; body: string }) {
       <div className="text-center max-w-md">
         <h1 className="text-[22px] font-[640] mb-2 font-display">{title}</h1>
         <p className="text-[14px] text-[var(--color-muted)] mb-6">{body}</p>
-        <Link href="/" className="btn btn-accent btn-rainbow">Start a new objective</Link>
+        <Link href="/" className="btn btn-accent btn-shine">Start a new objective</Link>
       </div>
     </div>
   );

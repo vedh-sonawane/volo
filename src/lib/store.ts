@@ -1,21 +1,28 @@
 // ─────────────────────────────────────────────────────────────────────────────
-// Local-first task store.
+// Local-first task store — now PER-USER.
 //
-// Persists tasks to a local SQLite file (zero cost, no server). The whole Task
-// object is stored as JSON in a single column — the engine treats a task as an
-// aggregate and we never need to query into its internals. An in-process cache
-// keeps the "live" task object identical between the running engine and any
-// reader, so SSE streaming reflects real state.
+// Every task belongs to exactly one user. Reads/writes are scoped to the current
+// user (from the request context, or DEFAULT_USER outside a request). The live
+// in-process cache also records the owner, so a shared-process cache can never
+// leak a task across accounts.
 // ─────────────────────────────────────────────────────────────────────────────
 
 import Database from "better-sqlite3";
 import fs from "node:fs";
 import path from "node:path";
 import type { Task } from "./types";
+import { currentUserId } from "./auth/context";
 
 const DB_PATH = process.env.VOLO_DB_PATH || "./.data/volo.db";
 
 let _db: Database.Database | null = null;
+
+function ensureColumn(d: Database.Database, table: string, column: string, def: string): void {
+  const cols = d.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[];
+  if (!cols.some((c) => c.name === column)) {
+    d.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${def}`);
+  }
+}
 
 function db(): Database.Database {
   if (_db) return _db;
@@ -31,49 +38,50 @@ function db(): Database.Database {
       data       TEXT NOT NULL
     );
   `);
+  // Migrate existing single-user DBs: add user_id (existing rows → the local user).
+  ensureColumn(_db, "tasks", "user_id", "TEXT NOT NULL DEFAULT 'local'");
+  _db.exec(`CREATE INDEX IF NOT EXISTS idx_tasks_user ON tasks(user_id, updated_at)`);
   return _db;
 }
 
-// Live in-memory copies so a running engine and concurrent readers share one
-// object identity within the process.
+// Live in-memory copies (shared object identity within the process) + their owner.
 const live = new Map<string, Task>();
+const owner = new Map<string, string>();
 
 export function saveTask(task: Task): void {
+  const uid = currentUserId();
   task.updatedAt = Date.now();
   live.set(task.id, task);
+  owner.set(task.id, uid);
   db()
     .prepare(
-      `INSERT INTO tasks (id, created_at, updated_at, data)
-       VALUES (@id, @createdAt, @updatedAt, @data)
+      `INSERT INTO tasks (id, user_id, created_at, updated_at, data)
+       VALUES (@id, @uid, @createdAt, @updatedAt, @data)
        ON CONFLICT(id) DO UPDATE SET updated_at = @updatedAt, data = @data`
     )
-    .run({
-      id: task.id,
-      createdAt: task.createdAt,
-      updatedAt: task.updatedAt,
-      data: JSON.stringify(task),
-    });
+    .run({ id: task.id, uid, createdAt: task.createdAt, updatedAt: task.updatedAt, data: JSON.stringify(task) });
 }
 
 export function getTask(taskId: string): Task | null {
-  if (live.has(taskId)) return live.get(taskId)!;
-  const row = db().prepare(`SELECT data FROM tasks WHERE id = ?`).get(taskId) as
-    | { data: string }
-    | undefined;
+  const uid = currentUserId();
+  if (live.has(taskId) && owner.get(taskId) === uid) return live.get(taskId)!;
+  const row = db().prepare(`SELECT data FROM tasks WHERE id = ? AND user_id = ?`).get(taskId, uid) as { data: string } | undefined;
   if (!row) return null;
   const task = JSON.parse(row.data) as Task;
   live.set(task.id, task);
+  owner.set(task.id, uid);
   return task;
 }
 
 export function listTasks(limit = 50): Task[] {
-  const rows = db()
-    .prepare(`SELECT data FROM tasks ORDER BY updated_at DESC LIMIT ?`)
-    .all(limit) as { data: string }[];
+  const uid = currentUserId();
+  const rows = db().prepare(`SELECT data FROM tasks WHERE user_id = ? ORDER BY updated_at DESC LIMIT ?`).all(uid, limit) as { data: string }[];
   return rows.map((r) => JSON.parse(r.data) as Task);
 }
 
 export function deleteTask(taskId: string): void {
+  const uid = currentUserId();
   live.delete(taskId);
-  db().prepare(`DELETE FROM tasks WHERE id = ?`).run(taskId);
+  owner.delete(taskId);
+  db().prepare(`DELETE FROM tasks WHERE id = ? AND user_id = ?`).run(taskId, uid);
 }
